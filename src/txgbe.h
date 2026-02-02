@@ -1449,6 +1449,8 @@ void txgbe_vlan_mode(struct net_device *, u32);
 #endif
 
 #ifdef HAVE_PTP_1588_CLOCK
+struct kernel_hwtstamp_config;
+
 void txgbe_ptp_init(struct txgbe_adapter *adapter);
 void txgbe_ptp_stop(struct txgbe_adapter *adapter);
 void txgbe_ptp_suspend(struct txgbe_adapter *adapter);
