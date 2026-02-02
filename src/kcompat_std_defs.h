@@ -241,6 +241,21 @@
 #else /* >=6.1.0 */
 #define HAVE_FLOW_DISSECTOR_KEY_L2TPV3
 #define HAVE_TTY_TERMIOS_CONST_STRUCT
+#define HAVE_NDO_GET_TSTAMP
 #endif /* 6.1.0 */
+
+/*****************************************************************************/
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,6,0))
+#else /* >=6.6.0 */
+#define HAVE_NDO_HWTSTAMP_OPS
+#define HAVE_NDO_MDB_OPS
+#endif /* 6.6.0 */
+
+/*****************************************************************************/
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0))
+#else /* >=6.12.0 */
+#define HAVE_NDO_MDB_BULK
+#define HAVE_NDO_MDB_GET
+#endif /* 6.12.0 */
 
 #endif /* _KCOMPAT_STD_DEFS_H_ */

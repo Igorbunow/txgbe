@@ -35,6 +35,7 @@
 #include <linux/tcp.h>
 #include <linux/pkt_sched.h>
 #include <linux/ipv6.h>
+#include <linux/timekeeping.h>
 #ifdef NETIF_F_TSO
 #include <net/checksum.h>
 #ifdef NETIF_F_TSO6
@@ -11618,6 +11619,56 @@ static void txgbe_fwd_del(struct net_device *pdev, void *fwd_priv)
 }
 #endif /*HAVE_VIRTUAL_STATION*/
 
+#ifdef HAVE_NDO_GET_TSTAMP
+static ktime_t txgbe_ndo_get_tstamp(struct net_device *netdev,
+				    const struct skb_shared_hwtstamps *hwtstamps,
+				    bool cycles)
+{
+	if (!hwtstamps)
+		return KTIME_ZERO;
+
+	return hwtstamps->hwtstamp;
+}
+#endif
+
+#ifdef HAVE_NDO_MDB_OPS
+static int txgbe_ndo_mdb_add(struct net_device *dev, struct nlattr *tb[],
+			     u16 nlmsg_flags,
+			     struct netlink_ext_ack __always_unused *extack)
+{
+	return -EOPNOTSUPP;
+}
+
+static int txgbe_ndo_mdb_del(struct net_device *dev, struct nlattr *tb[],
+			     struct netlink_ext_ack __always_unused *extack)
+{
+	return -EOPNOTSUPP;
+}
+
+static int txgbe_ndo_mdb_dump(struct net_device *dev, struct sk_buff *skb,
+			     struct netlink_callback *cb)
+{
+	return -EOPNOTSUPP;
+}
+
+#ifdef HAVE_NDO_MDB_BULK
+static int txgbe_ndo_mdb_del_bulk(struct net_device *dev, struct nlattr *tb[],
+				  struct netlink_ext_ack __always_unused *extack)
+{
+	return -EOPNOTSUPP;
+}
+#endif
+
+#ifdef HAVE_NDO_MDB_GET
+static int txgbe_ndo_mdb_get(struct sk_buff *skb, struct nlattr *tb[],
+			     struct net_device *dev, const unsigned char *addr,
+			     u16 vid, u32 portid, u32 seq,
+			     struct netlink_ext_ack __always_unused *extack)
+{
+	return -EOPNOTSUPP;
+}
+#endif
+#endif /* HAVE_NDO_MDB_OPS */
 
 #ifdef HAVE_NET_DEVICE_OPS
 static const struct net_device_ops txgbe_netdev_ops = {
@@ -11741,6 +11792,17 @@ static const struct net_device_ops txgbe_netdev_ops = {
 	.ndo_bridge_getlink     = txgbe_ndo_bridge_getlink,
 #endif /* HAVE_BRIDGE_ATTRIBS */
 #endif
+#ifdef HAVE_NDO_MDB_OPS
+	.ndo_mdb_add            = txgbe_ndo_mdb_add,
+	.ndo_mdb_del            = txgbe_ndo_mdb_del,
+	.ndo_mdb_dump           = txgbe_ndo_mdb_dump,
+#ifdef HAVE_NDO_MDB_BULK
+	.ndo_mdb_del_bulk       = txgbe_ndo_mdb_del_bulk,
+#endif
+#ifdef HAVE_NDO_MDB_GET
+	.ndo_mdb_get            = txgbe_ndo_mdb_get,
+#endif
+#endif
 #ifdef HAVE_VIRTUAL_STATION
 	.ndo_dfwd_add_station   = txgbe_fwd_add,
 	.ndo_dfwd_del_station   = txgbe_fwd_del,
@@ -11765,6 +11827,14 @@ static const struct net_device_ops txgbe_netdev_ops = {
 #ifdef HAVE_NDO_FEATURES_CHECK
 	.ndo_features_check     = txgbe_features_check,
 #endif /* HAVE_NDO_FEATURES_CHECK */
+
+#ifdef HAVE_NDO_GET_TSTAMP
+	.ndo_get_tstamp          = txgbe_ndo_get_tstamp,
+#endif
+#ifdef HAVE_NDO_HWTSTAMP_OPS
+	.ndo_hwtstamp_get        = txgbe_ndo_hwtstamp_get,
+	.ndo_hwtstamp_set        = txgbe_ndo_hwtstamp_set,
+#endif
 	
 #ifdef HAVE_XDP_SUPPORT
 #ifdef HAVE_NDO_BPF
@@ -13089,4 +13159,3 @@ static void __exit txgbe_exit_module(void)
 module_exit(txgbe_exit_module);
 
 /* txgbe_main.c */
-

@@ -1457,9 +1457,19 @@ void txgbe_ptp_rx_hang(struct txgbe_adapter *adapter);
 void txgbe_ptp_rx_hwtstamp(struct txgbe_adapter *adapter, struct sk_buff *skb);
 int txgbe_ptp_set_ts_config(struct txgbe_adapter *adapter, struct ifreq *ifr);
 int txgbe_ptp_get_ts_config(struct txgbe_adapter *adapter, struct ifreq *ifr);
+ktime_t txgbe_ndo_get_tstamp(struct net_device *dev,
+			    const struct skb_shared_hwtstamps *hwtstamps,
+			    bool cycles);
+int txgbe_ndo_hwtstamp_get(struct net_device *dev,
+			  struct kernel_hwtstamp_config *kernel_config);
+int txgbe_ndo_hwtstamp_set(struct net_device *dev,
+			  struct kernel_hwtstamp_config *kernel_config,
+			  struct netlink_ext_ack *extack);
 void txgbe_ptp_start_cyclecounter(struct txgbe_adapter *adapter);
 void txgbe_ptp_reset(struct txgbe_adapter *adapter);
 void txgbe_ptp_check_pps_event(struct txgbe_adapter *adapter);
+int txgbe_ptp_set_timestamp_mode(struct txgbe_adapter *adapter,
+				 struct hwtstamp_config *config);
 #endif /* HAVE_PTP_1588_CLOCK */
 #ifdef CONFIG_PCI_IOV
 void txgbe_sriov_reinit(struct txgbe_adapter *adapter);

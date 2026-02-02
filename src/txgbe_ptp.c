@@ -562,7 +562,7 @@ int txgbe_ptp_get_ts_config(struct txgbe_adapter *adapter, struct ifreq *ifr)
  * Note: this may modify the hwtstamp configuration towards a more general
  * mode, if required to support the specifically requested mode.
  */
-static int txgbe_ptp_set_timestamp_mode(struct txgbe_adapter *adapter,
+int txgbe_ptp_set_timestamp_mode(struct txgbe_adapter *adapter,
 					struct hwtstamp_config *config)
 {
 	struct txgbe_hw *hw = &adapter->hw;
@@ -668,6 +668,35 @@ static int txgbe_ptp_set_timestamp_mode(struct txgbe_adapter *adapter,
 
 	return 0;
 }
+
+#ifdef HAVE_NDO_HWTSTAMP_OPS
+int txgbe_ndo_hwtstamp_get(struct net_device *dev,
+			  struct kernel_hwtstamp_config *kernel_config)
+{
+	struct txgbe_adapter *adapter = netdev_priv(dev);
+	struct hwtstamp_config *config = &adapter->tstamp_config;
+
+	kernel_config->flags = config->flags;
+	kernel_config->tx_type = config->tx_type;
+	kernel_config->rx_filter = config->rx_filter;
+
+	return 0;
+}
+
+int txgbe_ndo_hwtstamp_set(struct net_device *dev,
+			  struct kernel_hwtstamp_config *kernel_config,
+			  struct netlink_ext_ack *extack)
+{
+	struct txgbe_adapter *adapter = netdev_priv(dev);
+	struct hwtstamp_config config = {
+		.flags = kernel_config->flags,
+		.tx_type = kernel_config->tx_type,
+		.rx_filter = kernel_config->rx_filter,
+	};
+
+	return txgbe_ptp_set_timestamp_mode(adapter, &config);
+}
+#endif /* HAVE_NDO_HWTSTAMP_OPS */
 
 /**
  * txgbe_ptp_set_ts_config - user entry point for timestamp mode
