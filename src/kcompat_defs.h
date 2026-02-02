@@ -36,4 +36,13 @@
 
 #include "kcompat_generated_defs.h"
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0))
+#ifndef HAVE_ETHTOOL_KEEE
+#define HAVE_ETHTOOL_KEEE
+#endif
+#ifndef HAVE_ETHTOOL_RXFH_RXFHPARAMS
+#define HAVE_ETHTOOL_RXFH_RXFHPARAMS
+#endif
+#endif
+
 #endif /* _KCOMPAT_DEFS_H_ */

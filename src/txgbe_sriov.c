@@ -822,7 +822,9 @@ static int txgbe_vf_reset_msg(struct txgbe_adapter *adapter, u16 vf)
 	pf_max_frame = dev->mtu + ETH_HLEN;
 
 #if IS_ENABLED(CONFIG_FCOE)
+#ifdef NETIF_F_FCOE_MTU
 	if (dev->features & NETIF_F_FCOE_MTU)
+#endif
 		pf_max_frame = max_t(int, pf_max_frame,
 				     TXGBE_FCOE_JUMBO_FRAME_SIZE);
 #endif /* CONFIG_FCOE */
@@ -1843,4 +1845,3 @@ int txgbe_ndo_get_vf_config(struct net_device *netdev,
 	return 0;
 }
 #endif /* IFLA_VF_MAX */
-

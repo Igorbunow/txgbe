@@ -96,6 +96,8 @@ function gen-ethtool() {
 	gen HAVE_ETHTOOL_COALESCE_EXTACK if method get_coalesce of ethtool_ops matches 'struct kernel_ethtool_coalesce \\*' in "$eth"
 	gen HAVE_ETHTOOL_EXTENDED_RINGPARAMS if method get_ringparam of ethtool_ops matches 'struct kernel_ethtool_ringparam \\*' in "$eth"
 	gen HAVE_ETHTOOL_RXFH_RXFHPARAMS if method get_rxfh of ethtool_ops matches 'struct ethtool_rxfh_param \\*' in "$eth"
+	gen HAVE_ETHTOOL_GET_TS_INFO if method get_ts_info of ethtool_ops matches 'struct kernel_ethtool_ts_info \\*' in "$eth"
+	gen HAVE_ETHTOOL_KEEE if struct ethtool_keee in "$eth"
 	gen NEED_ETHTOOL_SPRINTF if fun ethtool_sprintf absent in "$eth"
 	gen HAVE_ETHTOOL_FLOW_RSS if macro FLOW_RSS in "$ueth"
 }

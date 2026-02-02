@@ -26,6 +26,7 @@
 #include <linux/types.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/aer.h>
 #include <linux/netdevice.h>
 #include <linux/vmalloc.h>
 #include <linux/highmem.h>
@@ -36,6 +37,10 @@
 #include <linux/pkt_sched.h>
 #include <linux/ipv6.h>
 #include <linux/timekeeping.h>
+#include <linux/ktime.h>
+#ifndef KTIME_ZERO
+#define KTIME_ZERO ((ktime_t)0)
+#endif
 #ifdef NETIF_F_TSO
 #include <net/checksum.h>
 #ifdef NETIF_F_TSO6
@@ -53,6 +58,9 @@
 #include <linux/bpf.h>
 #include <linux/bpf_trace.h>
 #include <linux/atomic.h>
+#endif
+#ifdef HAVE_XDP_DO_FLUSH
+#include <net/xdp.h>
 #endif
 #include "txgbe_xsk.h"
 #ifdef HAVE_AF_XDP_ZC_SUPPORT
@@ -254,7 +262,7 @@ static inline int txgbe_enumerate_functions(struct txgbe_adapter *adapter)
 	return physfns;
 }
 
-void txgbe_service_event_schedule(struct txgbe_adapter *adapter)
+static void txgbe_service_event_schedule(struct txgbe_adapter *adapter)
 {
 	if (!test_bit(__TXGBE_DOWN, &adapter->state) &&
 	    !test_bit(__TXGBE_REMOVING, &adapter->state) &&
@@ -2721,8 +2729,13 @@ static int txgbe_clean_rx_irq(struct txgbe_q_vector *q_vector,
 		if (static_branch_unlikely(&txgbe_xdp_locking_key))
 			spin_unlock(&ring->tx_lock);
 	}
-	if (xdp_xmit & TXGBE_XDP_REDIR)
+	if (xdp_xmit & TXGBE_XDP_REDIR) {
+#ifdef HAVE_XDP_DO_FLUSH
+		xdp_do_flush();
+#else
 		xdp_do_flush_map();
+#endif
+	}
 #endif
 	u64_stats_update_begin(&rx_ring->syncp);
 	rx_ring->stats.packets += total_rx_packets;
@@ -4230,8 +4243,8 @@ static void txgbe_rx_desc_queue_enable(struct txgbe_adapter *adapter,
 }
 
 /* disable the specified tx ring/queue */
-void txgbe_disable_tx_queue(struct txgbe_adapter *adapter,
-			    struct txgbe_ring *ring)
+static __maybe_unused void txgbe_disable_tx_queue(struct txgbe_adapter *adapter,
+				   struct txgbe_ring *ring)
 {
 	struct txgbe_hw *hw = &adapter->hw;
 	int wait_loop = TXGBE_MAX_RX_DESC_POLL;
@@ -5211,7 +5224,7 @@ static int txgbe_uc_unsync(struct net_device *netdev, const unsigned char *addr)
 
 #endif
 
-int txgbe_add_cloud_switcher(struct txgbe_adapter *adapter, u32 key, u16 pool)
+static int txgbe_add_cloud_switcher(struct txgbe_adapter *adapter, u32 key, u16 pool)
 {
 	struct txgbe_hw *hw = &adapter->hw;
 
@@ -5228,7 +5241,7 @@ int txgbe_add_cloud_switcher(struct txgbe_adapter *adapter, u32 key, u16 pool)
 }
 
 
-int txgbe_del_cloud_switcher(struct txgbe_adapter *adapter, u32 key, u16 pool)
+static __maybe_unused int txgbe_del_cloud_switcher(struct txgbe_adapter *adapter, u32 key, u16 pool)
 {
 	/* search table for addr, if found, set to 0 and sync */
 	struct txgbe_hw *hw = &adapter->hw;
@@ -5647,9 +5660,11 @@ static void txgbe_configure_dcb(struct txgbe_adapter *adapter)
 
 
 #if IS_ENABLED(CONFIG_FCOE)
+#ifdef NETIF_F_FCOE_MTU
 	if (netdev->features & NETIF_F_FCOE_MTU)
 		max_frame = max_t(int, max_frame,
 				  TXGBE_FCOE_JUMBO_FRAME_SIZE);
+#endif
 #endif /* CONFIG_FCOE */
 
 #ifdef HAVE_DCBNL_IEEE
@@ -5767,10 +5782,12 @@ static int txgbe_hpbthresh(struct txgbe_adapter *adapter, int pb)
 
 #if IS_ENABLED(CONFIG_FCOE)
 	/* FCoE traffic class uses FCOE jumbo frames */
+#ifdef NETIF_F_FCOE_MTU
 	if ((dev->features & NETIF_F_FCOE_MTU) &&
 	    (tc < TXGBE_FCOE_JUMBO_FRAME_SIZE) &&
 	    (pb == netdev_get_prio_tc_map(dev, adapter->fcoe.up)))
 		tc = TXGBE_FCOE_JUMBO_FRAME_SIZE;
+#endif
 #endif /* CONFIG_FCOE */
 
 	/* Calculate delay value for device */
@@ -5818,10 +5835,12 @@ static int txgbe_lpbthresh(struct txgbe_adapter *adapter, int __maybe_unused pb)
 
 #if IS_ENABLED(CONFIG_FCOE)
 	/* FCoE traffic class uses FCOE jumbo frames */
+#ifdef NETIF_F_FCOE_MTU
 	if ((dev->features & NETIF_F_FCOE_MTU) &&
 	    (tc < TXGBE_FCOE_JUMBO_FRAME_SIZE) &&
 	    (pb == netdev_get_prio_tc_map(dev, adapter->fcoe.up)))
 		tc = TXGBE_FCOE_JUMBO_FRAME_SIZE;
+#endif
 #endif /* CONFIG_FCOE */
 
 	/* Calculate delay value for device */
@@ -5953,7 +5972,7 @@ void txgbe_configure_isb(struct txgbe_adapter *adapter)
 	wr32(hw, TXGBE_PX_ISB_ADDR_H, adapter->isb_dma >> 32);
 }
 
-void txgbe_configure_port(struct txgbe_adapter *adapter)
+static void txgbe_configure_port(struct txgbe_adapter *adapter)
 {
 	struct txgbe_hw *hw = &adapter->hw;
 	u32 value, i;
@@ -6761,7 +6780,7 @@ static void txgbe_fdir_filter_exit(struct txgbe_adapter *adapter)
 	spin_unlock(&adapter->fdir_perfect_lock);
 }
 
-void txgbe_disable_device(struct txgbe_adapter *adapter)
+static void txgbe_disable_device(struct txgbe_adapter *adapter)
 {
 	struct net_device *netdev = adapter->netdev;
 	struct txgbe_hw *hw = &adapter->hw;
@@ -6910,7 +6929,7 @@ void txgbe_down(struct txgbe_adapter *adapter)
  *  hw_addr, back, device_id, vendor_id, subsystem_device_id,
  *  subsystem_vendor_id, and revision_id
  **/
-s32 txgbe_init_shared_code(struct txgbe_hw *hw)
+static s32 __maybe_unused txgbe_init_shared_code(struct txgbe_hw *hw)
 {
 	s32 status;
 
@@ -10285,7 +10304,7 @@ static u16 txgbe_select_queue(struct net_device *dev, struct sk_buff *skb)
  *	May return error in out of memory cases. The skb is freed on error.
  */
 
-int txgbe_skb_pad_nonzero(struct sk_buff *skb, int pad)
+static int txgbe_skb_pad_nonzero(struct sk_buff *skb, int pad)
 {
 	int err;
 	int ntail;
@@ -11620,9 +11639,9 @@ static void txgbe_fwd_del(struct net_device *pdev, void *fwd_priv)
 #endif /*HAVE_VIRTUAL_STATION*/
 
 #ifdef HAVE_NDO_GET_TSTAMP
-static ktime_t txgbe_ndo_get_tstamp(struct net_device *netdev,
-				    const struct skb_shared_hwtstamps *hwtstamps,
-				    bool cycles)
+ktime_t txgbe_ndo_get_tstamp(struct net_device *netdev,
+			    const struct skb_shared_hwtstamps *hwtstamps,
+			    bool cycles)
 {
 	if (!hwtstamps)
 		return KTIME_ZERO;
@@ -11660,9 +11679,9 @@ static int txgbe_ndo_mdb_del_bulk(struct net_device *dev, struct nlattr *tb[],
 #endif
 
 #ifdef HAVE_NDO_MDB_GET
-static int txgbe_ndo_mdb_get(struct sk_buff *skb, struct nlattr *tb[],
-			     struct net_device *dev, const unsigned char *addr,
-			     u16 vid, u32 portid, u32 seq,
+static int txgbe_ndo_mdb_get(struct net_device *dev,
+			     struct nlattr *tb[],
+			     u32 portid, u32 seq,
 			     struct netlink_ext_ack __always_unused *extack)
 {
 	return -EOPNOTSUPP;
@@ -12027,8 +12046,8 @@ static int __devinit txgbe_probe(struct pci_dev *pdev,
 		hw->device_id = pdev->device;
 		vfree(hw);
 	}
-#ifdef HAVE_PCI_ENABLE_PCIE_ERROR_REPORTING
-	pci_enable_pcie_error_reporting(pdev);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
+		pci_enable_pcie_error_reporting(pdev);
 #endif
 	pci_set_master(pdev);
 	/* errata 16 */
@@ -12336,11 +12355,13 @@ static int __devinit txgbe_probe(struct pci_dev *pdev,
 
 		{
 			netdev->features |= NETIF_F_FSO |
-					    NETIF_F_FCOE_CRC;
+					     NETIF_F_FCOE_CRC;
 #ifndef HAVE_NETDEV_OPS_FCOE_ENABLE
 			txgbe_fcoe_ddp_enable(adapter);
 			adapter->flags |= TXGBE_FLAG_FCOE_ENABLED;
+#ifdef NETIF_F_FCOE_MTU
 			netdev->features |= NETIF_F_FCOE_MTU;
+#endif
 #endif /* HAVE_NETDEV_OPS_FCOE_ENABLE */
 		}
 
@@ -12349,8 +12370,11 @@ static int __devinit txgbe_probe(struct pci_dev *pdev,
 
 #ifdef HAVE_NETDEV_VLAN_FEATURES
 		netdev->vlan_features |= NETIF_F_FSO |
-					 NETIF_F_FCOE_CRC |
-					 NETIF_F_FCOE_MTU;
+					 NETIF_F_FCOE_CRC
+#ifdef NETIF_F_FCOE_MTU
+					 | NETIF_F_FCOE_MTU
+#endif
+					 ;
 #endif /* HAVE_NETDEV_VLAN_FEATURES */
 	}
 #endif /* NETIF_F_FSO */
@@ -12768,8 +12792,8 @@ static void __devexit txgbe_remove(struct pci_dev *pdev)
 #endif
 	disable_dev = !test_and_set_bit(__TXGBE_DISABLED, &adapter->state);
 	free_netdev(netdev);
-#ifdef HAVE_PCI_ENABLE_PCIE_ERROR_REPORTING
-	pci_disable_pcie_error_reporting(pdev);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
+		pci_disable_pcie_error_reporting(pdev);
 #endif
 	if (disable_dev)
 		pci_disable_device(pdev);

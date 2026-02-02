@@ -1041,7 +1041,7 @@ s32 txgbe_init_rx_addrs(struct txgbe_hw *hw)
  *
  *  Adds it to unused receive address register or goes into promiscuous mode.
  **/
-void txgbe_add_uc_addr(struct txgbe_hw *hw, u8 *addr, u32 vmdq)
+static void txgbe_add_uc_addr(struct txgbe_hw *hw, u8 *addr, u32 vmdq)
 {
 	u32 rar_entries = hw->mac.num_rar_entries;
 	u32 rar;
@@ -1179,7 +1179,7 @@ STATIC s32 txgbe_mta_vector(struct txgbe_hw *hw, u8 *mc_addr)
  *
  *  Sets the bit-vector in the multicast table.
  **/
-void txgbe_set_mta(struct txgbe_hw *hw, u8 *mc_addr)
+static void txgbe_set_mta(struct txgbe_hw *hw, u8 *mc_addr)
 {
 	u32 vector;
 	u32 vector_bit;
@@ -2823,7 +2823,7 @@ s32 txgbe_reset_hostif(struct txgbe_hw *hw)
 }
 
 
-s32 txgbe_setup_mac_link_hostif(struct txgbe_hw *hw, u32 speed)
+static __maybe_unused s32 txgbe_setup_mac_link_hostif(struct txgbe_hw *hw, u32 speed)
 {
 	struct txgbe_hic_phy_cfg cmd;
 	int i;
@@ -2860,7 +2860,7 @@ s32 txgbe_setup_mac_link_hostif(struct txgbe_hw *hw, u32 speed)
 
 }
 
-u16 txgbe_crc16_ccitt(const u8 *buf, int size)
+static u16 txgbe_crc16_ccitt(const u8 *buf, int size)
 {
 	u16 crc = 0;
 	int i;
@@ -3042,7 +3042,7 @@ int txgbe_flash_read_dword(struct txgbe_hw *hw, u32 addr, u32 *data)
 
 }
 
-int txgbe_flash_write_cab(struct txgbe_hw *hw,u32 addr, u32 value,u16 lan_id)
+static __maybe_unused int txgbe_flash_write_cab(struct txgbe_hw *hw,u32 addr, u32 value,u16 lan_id)
 {
 	int status;
 	struct txgbe_hic_read_cab buffer;
@@ -3068,7 +3068,7 @@ int txgbe_flash_write_cab(struct txgbe_hw *hw,u32 addr, u32 value,u16 lan_id)
 	return status;
 }
 
-int txgbe_flash_read_cab(struct txgbe_hw *hw, u32 addr ,u16 lan_id )
+static __maybe_unused int txgbe_flash_read_cab(struct txgbe_hw *hw, u32 addr ,u16 lan_id )
 {
 	int status;
 	struct txgbe_hic_read_cab buffer;
@@ -3100,7 +3100,7 @@ int txgbe_flash_read_cab(struct txgbe_hw *hw, u32 addr ,u16 lan_id )
 
 	return rd32(hw,0x1e108);
 }
-int txgbe_flash_write_unlock(struct txgbe_hw *hw)
+static int txgbe_flash_write_unlock(struct txgbe_hw *hw)
 {
 	int status;
 	struct txgbe_hic_read_shadow_ram buffer;
@@ -3121,7 +3121,7 @@ int txgbe_flash_write_unlock(struct txgbe_hw *hw)
 	return status;
 }
 
-int txgbe_flash_write_lock(struct txgbe_hw *hw)
+static __maybe_unused int txgbe_flash_write_lock(struct txgbe_hw *hw)
 {
 	int status;
 	struct txgbe_hic_read_shadow_ram buffer;
@@ -4675,7 +4675,7 @@ void txgbe_set_hard_rate_select_speed(struct txgbe_hw *hw,
 	TXGBE_WRITE_FLUSH(hw);
 }
 
-s32 txgbe_enable_rx_adapter(struct txgbe_hw *hw)
+static __maybe_unused s32 txgbe_enable_rx_adapter(struct txgbe_hw *hw)
 {
 	u32 value;
 
@@ -5274,7 +5274,7 @@ out:
 	return status;
 }
 
-s32 txgbe_set_link_to_sfi(struct txgbe_hw *hw,
+static s32 txgbe_set_link_to_sfi(struct txgbe_hw *hw,
 			       u32 speed)
 {
 	u32 i;
@@ -5695,7 +5695,7 @@ STATIC s32 txgbe_setup_copper_link(struct txgbe_hw *hw,
 	return status;
 }
 
-int txgbe_reset_misc(struct txgbe_hw *hw)
+static int txgbe_reset_misc(struct txgbe_hw *hw)
 {
 	int i;
 	u32 value;
@@ -6967,7 +6967,7 @@ s32 txgbe_init_eeprom_params(struct txgbe_hw *hw)
  *
  *  Reads a 16 bit word from the EEPROM using the hostif.
  **/
-s32 txgbe_read_ee_hostif_data(struct txgbe_hw *hw, u16 offset,
+static s32 txgbe_read_ee_hostif_data(struct txgbe_hw *hw, u16 offset,
 				   u16 *data)
 {
 	s32 status;
@@ -7112,7 +7112,7 @@ out:
  *
  *  Write a 16 bit word to the EEPROM using the hostif.
  **/
-s32 txgbe_write_ee_hostif_data(struct txgbe_hw *hw, u16 offset,
+static s32 txgbe_write_ee_hostif_data(struct txgbe_hw *hw, u16 offset,
 				    u16 data)
 {
 	s32 status;
@@ -7587,7 +7587,7 @@ s32 txgbe_hic_write_lldp(struct txgbe_hw *hw,u32 open)
 }
 
 
-int txgbe_hic_get_lldp(struct txgbe_hw *hw)
+static int txgbe_hic_get_lldp(struct txgbe_hw *hw)
 {
 	int status;
 	struct txgbe_hic_write_lldp buffer;

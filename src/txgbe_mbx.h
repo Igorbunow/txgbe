@@ -170,4 +170,24 @@ void txgbe_init_mbx_ops(struct txgbe_hw *hw);
 void txgbe_init_mbx_params_vf(struct txgbe_hw *);
 void txgbe_init_mbx_params_pf(struct txgbe_hw *);
 
+int txgbe_poll_for_msg(struct txgbe_hw *hw, u16 mbx_id);
+int txgbe_poll_for_ack(struct txgbe_hw *hw, u16 mbx_id);
+u32 txgbe_read_v2p_mailbox(struct txgbe_hw *hw);
+int txgbe_check_for_bit_vf(struct txgbe_hw *hw, u32 mask);
+int txgbe_check_for_msg_vf(struct txgbe_hw *hw, u16 mbx_id);
+int txgbe_check_for_ack_vf(struct txgbe_hw *hw, u16 mbx_id);
+int txgbe_check_for_rst_vf(struct txgbe_hw *hw, u16 mbx_id);
+int txgbe_obtain_mbx_lock_vf(struct txgbe_hw *hw);
+int txgbe_write_mbx_vf(struct txgbe_hw *hw, u32 *msg, u16 size,
+		       u16 mbx_id);
+int txgbe_read_mbx_vf(struct txgbe_hw *hw, u32 *msg, u16 size,
+		      u16 mbx_id);
+int txgbe_check_for_bit_pf(struct txgbe_hw *hw, u32 mask, int index);
+int txgbe_check_for_msg_pf(struct txgbe_hw *hw, u16 vf);
+int txgbe_check_for_ack_pf(struct txgbe_hw *hw, u16 vf);
+int txgbe_check_for_rst_pf(struct txgbe_hw *hw, u16 vf);
+int txgbe_obtain_mbx_lock_pf(struct txgbe_hw *hw, u16 vf);
+int txgbe_write_mbx_pf(struct txgbe_hw *hw, u32 *msg, u16 size, u16 vf);
+int txgbe_read_mbx_pf(struct txgbe_hw *hw, u32 *msg, u16 size, u16 vf);
+
 #endif /* _TXGBE_MBX_H_ */

@@ -41,6 +41,11 @@
 #endif
 #ifdef HAVE_ETHTOOL_GET_TS_INFO
 #include <linux/net_tstamp.h>
+#if defined(HAVE_KERNEL_ETHTOOL_TS_INFO_STRUCT)
+typedef struct kernel_ethtool_ts_info txgbe_ethtool_ts_info_t;
+#else
+typedef struct ethtool_ts_info txgbe_ethtool_ts_info_t;
+#endif
 #endif
 
 #ifndef ETH_GSTRING_LEN
@@ -336,7 +341,7 @@ static int txgbe_set_supported_1g_10gtypes(struct txgbe_hw *hw,
 	return 0;
 }
 
-int txgbe_get_link_ksettings(struct net_device *netdev,
+static int txgbe_get_link_ksettings(struct net_device *netdev,
 		    struct ethtool_link_ksettings *cmd)
 {
 	struct txgbe_adapter *adapter = netdev_priv(netdev);
@@ -1813,7 +1818,7 @@ static void txgbe_get_drvinfo(struct net_device *netdev,
 	drvinfo->regdump_len = txgbe_get_regs_len(netdev);
 }
 
-static void txgbe_get_ringparam(struct net_device *netdev,
+static void __maybe_unused txgbe_get_ringparam(struct net_device *netdev,
 #ifdef HAVE_ETHTOOL_EXTENDED_RINGPARAMS
 				struct ethtool_ringparam *ring,
 				struct kernel_ethtool_ringparam *ringp,
@@ -1834,7 +1839,7 @@ static void txgbe_get_ringparam(struct net_device *netdev,
 	ring->rx_jumbo_pending = 0;
 }
 
-static int txgbe_set_ringparam(struct net_device *netdev,
+static int __maybe_unused txgbe_set_ringparam(struct net_device *netdev,
 #ifdef HAVE_ETHTOOL_EXTENDED_RINGPARAMS
 				struct ethtool_ringparam *ring,
 				struct kernel_ethtool_ringparam *ringp,
@@ -4720,7 +4725,7 @@ static int txgbe_set_rxfh(struct net_device *netdev, const u32 *indir,
 
 #ifdef HAVE_ETHTOOL_GET_TS_INFO
 static int txgbe_get_ts_info(struct net_device *dev,
-			     struct ethtool_ts_info *info)
+			     txgbe_ethtool_ts_info_t *info)
 {
 	struct txgbe_adapter *adapter = netdev_priv(dev);
 
@@ -4990,14 +4995,14 @@ ERROR_IO:
 #endif /* ETHTOOL_GMODULEINFO */
 
 #ifdef ETHTOOL_GEEE
-static int txgbe_get_eee(struct net_device *netdev, struct ethtool_eee *edata)
+static int __maybe_unused txgbe_get_eee(struct net_device *netdev, struct ethtool_eee *edata)
 {
 	return 0;
 }
 #endif /* ETHTOOL_GEEE */
 
 #ifdef ETHTOOL_SEEE
-static int txgbe_set_eee(struct net_device *netdev, struct ethtool_eee *edata)
+static int __maybe_unused txgbe_set_eee(struct net_device *netdev, struct ethtool_eee *edata)
 {
 	struct txgbe_adapter *adapter = netdev_priv(netdev);
 	struct txgbe_hw *hw = &adapter->hw;
@@ -5052,6 +5057,19 @@ static int txgbe_set_eee(struct net_device *netdev, struct ethtool_eee *edata)
 }
 #endif /* ETHTOOL_SEEE */
 
+#ifdef HAVE_ETHTOOL_KEEE
+static int txgbe_get_eee_ke(struct net_device *netdev, struct ethtool_keee *edata)
+{
+	memset(edata, 0, sizeof(*edata));
+	return 0;
+}
+
+static int txgbe_set_eee_ke(struct net_device *netdev, struct ethtool_keee *edata)
+{
+	return -EOPNOTSUPP;
+}
+#endif /* HAVE_ETHTOOL_KEEE */
+
 static int txgbe_set_flash(struct net_device *netdev, struct ethtool_flash *ef)
 {
 	int ret;
@@ -5099,8 +5117,10 @@ static struct ethtool_ops txgbe_ethtool_ops = {
 	.get_eeprom_len         = txgbe_get_eeprom_len,
 	.get_eeprom             = txgbe_get_eeprom,
 	.set_eeprom             = txgbe_set_eeprom,
+#ifdef HAVE_ETHTOOL_EXTENDED_RINGPARAMS
 	.get_ringparam          = txgbe_get_ringparam,
 	.set_ringparam          = txgbe_set_ringparam,
+#endif
 	.get_pauseparam         = txgbe_get_pauseparam,
 	.set_pauseparam         = txgbe_set_pauseparam,
 	.get_msglevel           = txgbe_get_msglevel,
@@ -5161,12 +5181,15 @@ static struct ethtool_ops txgbe_ethtool_ops = {
 #endif /* ETHTOOL_GRXRINGS */
 #ifndef HAVE_RHEL6_ETHTOOL_OPS_EXT_STRUCT
 
-#ifdef ETHTOOL_GEEE
+#if defined(HAVE_ETHTOOL_KEEE)
+	.get_eee                = txgbe_get_eee_ke,
+	.set_eee                = txgbe_set_eee_ke,
+#elif defined(ETHTOOL_GEEE)
 	.get_eee                = txgbe_get_eee,
-#endif /* ETHTOOL_GEEE */
 #ifdef ETHTOOL_SEEE
 	.set_eee                = txgbe_set_eee,
-#endif /* ETHTOOL_SEEE */
+#endif
+#endif /* HAVE_ETHTOOL_KEEE || ETHTOOL_GEEE */
 #ifdef ETHTOOL_SCHANNELS
 	.get_channels           = txgbe_get_channels,
 	.set_channels           = txgbe_set_channels,
@@ -5178,12 +5201,17 @@ static struct ethtool_ops txgbe_ethtool_ops = {
 #ifdef HAVE_ETHTOOL_GET_TS_INFO
 	.get_ts_info            = txgbe_get_ts_info,
 #endif
-#if defined(ETHTOOL_GRSSH) && defined(ETHTOOL_SRSSH)
+#if defined(HAVE_ETHTOOL_RXFH_RXFHPARAMS)
 	.get_rxfh_indir_size	= txgbe_rss_indir_size,
 	.get_rxfh_key_size		= txgbe_get_rxfh_key_size,
 	.get_rxfh		= txgbe_get_rxfh,
 	.set_rxfh		= txgbe_set_rxfh,
-#endif /* ETHTOOL_GRSSH && ETHTOOL_SRSSH */
+#elif defined(ETHTOOL_GRSSH) && defined(ETHTOOL_SRSSH)
+	.get_rxfh_indir_size	= txgbe_rss_indir_size,
+	.get_rxfh_key_size		= txgbe_get_rxfh_key_size,
+	.get_rxfh		= txgbe_get_rxfh,
+	.set_rxfh		= txgbe_set_rxfh,
+#endif /* HAVE_ETHTOOL_RXFH_RXFHPARAMS || (ETHTOOL_GRSSH && ETHTOOL_SRSSH) */
 #endif /* HAVE_RHEL6_ETHTOOL_OPS_EXT_STRUCT */
 	.flash_device      	= txgbe_set_flash,
 };
@@ -5191,7 +5219,9 @@ static struct ethtool_ops txgbe_ethtool_ops = {
 #ifdef HAVE_RHEL6_ETHTOOL_OPS_EXT_STRUCT
 static const struct ethtool_ops_ext txgbe_ethtool_ops_ext = {
 	.size                   = sizeof(struct ethtool_ops_ext),
+#ifdef HAVE_ETHTOOL_GET_TS_INFO
 	.get_ts_info            = txgbe_get_ts_info,
+#endif
 	.set_phys_id            = txgbe_set_phys_id,
 	.get_channels           = txgbe_get_channels,
 	.set_channels           = txgbe_set_channels,
@@ -5199,18 +5229,26 @@ static const struct ethtool_ops_ext txgbe_ethtool_ops_ext = {
 	.get_module_info        = txgbe_get_module_info,
 	.get_module_eeprom      = txgbe_get_module_eeprom,
 #endif
-#if defined(ETHTOOL_GRSSH) && defined(ETHTOOL_SRSSH)
+#ifdef HAVE_ETHTOOL_RXFH_RXFHPARAMS
 	.get_rxfh_indir_size	= txgbe_rss_indir_size,
 	.get_rxfh_key_size	= txgbe_get_rxfh_key_size,
 	.get_rxfh		= txgbe_get_rxfh,
 	.set_rxfh		= txgbe_set_rxfh,
-#endif /* ETHTOOL_GRSSH && ETHTOOL_SRSSH */
-#ifdef ETHTOOL_GEEE
+#elif defined(ETHTOOL_GRSSH) && defined(ETHTOOL_SRSSH)
+	.get_rxfh_indir_size	= txgbe_rss_indir_size,
+	.get_rxfh_key_size	= txgbe_get_rxfh_key_size,
+	.get_rxfh		= txgbe_get_rxfh,
+	.set_rxfh		= txgbe_set_rxfh,
+#endif /* HAVE_ETHTOOL_RXFH_RXFHPARAMS || (ETHTOOL_GRSSH && ETHTOOL_SRSSH) */
+#if defined(HAVE_ETHTOOL_KEEE)
+	.get_eee                = txgbe_get_eee_ke,
+	.set_eee                = txgbe_set_eee_ke,
+#elif defined(ETHTOOL_GEEE)
 	.get_eee                = txgbe_get_eee,
-#endif /* ETHTOOL_GEEE */
 #ifdef ETHTOOL_SEEE
 	.set_eee                = txgbe_set_eee,
-#endif /* ETHTOOL_SEEE */
+#endif
+#endif /* HAVE_ETHTOOL_KEEE || ETHTOOL_GEEE */
 };
 
 #endif /* HAVE_RHEL6_ETHTOOL_OPS_EXT_STRUCT */
@@ -5227,4 +5265,3 @@ void txgbe_set_ethtool_ops(struct net_device *netdev)
 #endif /* HAVE_RHEL6_ETHTOOL_OPS_EXT_STRUCT */
 }
 #endif /* SIOCETHTOOL */
-

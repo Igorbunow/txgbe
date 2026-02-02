@@ -45,7 +45,7 @@ enum txgbe_data_func {
 /**
  * data operation
  **/
-ssize_t
+static ssize_t
 txgbe_simple_read_from_pcibar(struct txgbe_adapter *adapter, int res,
 		void __user *buf, size_t size, loff_t *ppos)
 {
@@ -71,7 +71,7 @@ txgbe_simple_read_from_pcibar(struct txgbe_adapter *adapter, int res,
 	return size;
 }
 
-ssize_t
+static ssize_t
 txgbe_simple_read_from_flash(struct txgbe_adapter *adapter,
 		void __user *buf, size_t size, loff_t *ppos)
 {
@@ -116,7 +116,7 @@ txgbe_simple_read_from_flash(struct txgbe_adapter *adapter,
 	return size;
 }
 
-ssize_t
+static ssize_t
 txgbe_simple_write_to_flash(struct txgbe_adapter *adapter,
 	const void __user *from, size_t size, loff_t *ppos, size_t available)
 {
@@ -798,4 +798,3 @@ rx_ring_summary:
 		}
 	}
 }
-

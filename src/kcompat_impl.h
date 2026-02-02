@@ -435,6 +435,8 @@ _kc_devlink_alloc(const struct devlink_ops *ops, size_t priv_size,
 #endif /* NEED_DEVLINK_ALLOC_SETS_DEV */
 
 #ifdef HAVE_DEVLINK_RELOAD_ACTION_AND_LIMIT
+#if defined(HAVE_DEVLINK_RELOAD_ACTION_AND_LIMIT) && \
+    (LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0))
 #ifdef NEED_DEVLINK_UNLOCKED_RESOURCE
 /*
  * NEED_DEVLINK_UNLOCKED_RESOURCE
@@ -484,9 +486,11 @@ _kc_devlink_resources_unregister(struct devlink *devlink)
 
 #define devlink_resources_unregister _kc_devlink_resources_unregister
 #endif /* NEED_DEVLINK_RESOURCES_UNREGISTER_NO_RESOURCE */
+#endif /* HAVE_DEVLINK_RELOAD_ACTION_AND_LIMIT && < 6.12.0 */
 #endif /* HAVE_DEVLINK_RELOAD_ACTION_AND_LIMIT */
 
-#ifdef NEED_DEVLINK_TO_DEV
+#if defined(NEED_DEVLINK_TO_DEV) && \
+    (LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0))
 /*
  * Commit 2131463 ("devlink: Reduce struct devlink exposure")
  * removed devlink struct fields from header to avoid exposure
@@ -498,7 +502,7 @@ devlink_to_dev(const struct devlink *devlink)
 {
 	return devlink->dev;
 }
-#endif /* NEED_DEVLINK_TO_DEV */
+#endif /* NEED_DEVLINK_TO_DEV && < 6.12.0 */
 
 #endif /* CONFIG_NET_DEVLINK */
 
@@ -988,8 +992,8 @@ cpu_latency_qos_remove_request(struct pm_qos_request *req)
 #define netdev_bpf netdev_xdp
 #endif /* NEED_NETDEV_XDP_STRUCT */
 
-#ifdef NEED_NO_NETDEV_PROG_XDP_WARN_ACTION
-#ifdef HAVE_XDP_SUPPORT
+#if defined(NEED_NO_NETDEV_PROG_XDP_WARN_ACTION) && defined(HAVE_XDP_SUPPORT) && \
+    (LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0))
 #include <linux/filter.h>
 static inline void
 _kc_bpf_warn_invalid_xdp_action(__maybe_unused struct net_device *dev,
@@ -1000,8 +1004,7 @@ _kc_bpf_warn_invalid_xdp_action(__maybe_unused struct net_device *dev,
 
 #define bpf_warn_invalid_xdp_action(dev, prog, act) \
 	_kc_bpf_warn_invalid_xdp_action(dev, prog, act)
-#endif /* HAVE_XDP_SUPPORT */
-#endif /* HAVE_NETDEV_PROG_XDP_WARN_ACTION */
+#endif /* NEED_NO_NETDEV_PROG_XDP_WARN_ACTION && HAVE_XDP_SUPPORT && < 6.12.0 */
 
 /* NEED_ETH_HW_ADDR_SET
  *
@@ -1657,7 +1660,8 @@ static inline void bitmap_to_arr32(u32 *buf, const unsigned long *bitmap,
  * implementation. Undef for 6.1+ where new function was introduced.
  * RedHat 9.2 required using no weight parameter option.
  */
-#ifdef NEED_NETIF_NAPI_ADD_NO_WEIGHT
+#if defined(NEED_NETIF_NAPI_ADD_NO_WEIGHT) && \
+    (LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0))
 static inline void
 _kc_netif_napi_add(struct net_device *dev, struct napi_struct *napi,
 		   int (*poll)(struct napi_struct *, int))
@@ -1670,7 +1674,7 @@ _kc_netif_napi_add(struct net_device *dev, struct napi_struct *napi,
 #undef netif_napi_add
 #endif
 #define netif_napi_add _kc_netif_napi_add
-#endif /* NEED_NETIF_NAPI_ADD_NO_WEIGHT */
+#endif /* NEED_NETIF_NAPI_ADD_NO_WEIGHT && < 6.12.0 */
 
 /*
  * NEED_ETHTOOL_SPRINTF
@@ -1717,7 +1721,8 @@ __printf(2, 3) int sysfs_emit(char *buf, const char *fmt, ...);
  * variants on the older kernels to allow the same driver code working on
  * both old and new kernels.
  */
-#ifdef HAVE_U64_STATS_FETCH_BEGIN_IRQ
+#if defined(HAVE_U64_STATS_FETCH_BEGIN_IRQ) && \
+    (LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0))
 #define u64_stats_fetch_begin _kc_u64_stats_fetch_begin
 
 static inline unsigned int
@@ -1725,9 +1730,10 @@ _kc_u64_stats_fetch_begin(const struct u64_stats_sync *syncp)
 {
 	return u64_stats_fetch_begin_irq(syncp);
 }
-#endif /* HAVE_U64_STATS_FETCH_BEGIN_IRQ */
+#endif /* HAVE_U64_STATS_FETCH_BEGIN_IRQ && < 6.12.0 */
 
-#ifdef HAVE_U64_STATS_FETCH_RETRY_IRQ
+#if defined(HAVE_U64_STATS_FETCH_RETRY_IRQ) && \
+    (LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0))
 #define u64_stats_fetch_retry _kc_u64_stats_fetch_retry
 
 static inline bool
@@ -1736,7 +1742,7 @@ _kc_u64_stats_fetch_retry(const struct u64_stats_sync *syncp,
 {
 	return u64_stats_fetch_retry_irq(syncp, start);
 }
-#endif /* HAVE_U64_STATS_FETCH_RETRY_IRQ */
+#endif /* HAVE_U64_STATS_FETCH_RETRY_IRQ && < 6.12.0 */
 
 /*
  * NEED_U64_STATS_READ
@@ -1843,7 +1849,8 @@ static inline void _kc_devm_kfree(struct device *dev, void *p)
  * kernel 6.1 by upstream commit 1060707e3809 ("ptp: introduce helpers
  * to adjust by scaled parts per million").
  */
-#ifdef NEED_DIFF_BY_SCALED_PPM
+#if defined(NEED_DIFF_BY_SCALED_PPM) && \
+    (LINUX_VERSION_CODE < KERNEL_VERSION(6,1,0))
 static inline bool
 diff_by_scaled_ppm(u64 base, long scaled_ppm, u64 *diff)
 {
@@ -1870,8 +1877,9 @@ adjust_by_scaled_ppm(u64 base, long scaled_ppm)
 
 	return base + diff;
 }
-#endif /* NEED_DIFF_BY_SCALED_PPM */
+#endif /* NEED_DIFF_BY_SCALED_PPM && < 6.1.0 */
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
 #ifndef HAVE_PCI_MSIX_CAN_ALLOC_DYN
 static inline bool pci_msix_can_alloc_dyn(struct pci_dev __always_unused *dev)
 {
@@ -1907,6 +1915,7 @@ pci_msix_free_irq(struct pci_dev __always_unused *dev,
 {
 }
 #endif /* !HAVE_PCI_MSIX_FREE_IRQ */
+#endif /* < 6.12.0 */
 
 #ifdef NEED_PCIE_PTM_ENABLED
 /* NEED_PCIE_PTM_ENABLED
@@ -2010,7 +2019,8 @@ debugfs_lookup_and_remove(const char *name, struct dentry *parent)
  *
  * class_create no longer has owner/module param as it was not used.
  */
-#ifdef NEED_CLASS_CREATE_WITH_MODULE_PARAM
+#if defined(NEED_CLASS_CREATE_WITH_MODULE_PARAM) && \
+    (LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0))
 static inline struct class *_kc_class_create(const char *name)
 {
 	return class_create(THIS_MODULE, name);
@@ -2019,7 +2029,7 @@ static inline struct class *_kc_class_create(const char *name)
 #undef class_create
 #endif
 #define class_create _kc_class_create
-#endif /* NEED_CLASS_CREATE_WITH_MODULE_PARAM */
+#endif /* NEED_CLASS_CREATE_WITH_MODULE_PARAM && < 6.12.0 */
 
 /* NEED_LOWER_16_BITS and NEED_UPPER_16_BITS
  *

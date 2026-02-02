@@ -713,9 +713,15 @@ static struct sk_buff *txgbe_construct_skb_zc(struct txgbe_ring *rx_ring,
 	struct sk_buff *skb;
 
 	/* allocate a skb to store the frags */
+#ifdef SKB_ALLOC_NAPI
+	skb = napi_alloc_skb(&rx_ring->q_vector->napi,
+			     xdp_buffer->data_end -
+			     xdp_buffer->data_hard_start);
+#else
 	skb = __napi_alloc_skb(&rx_ring->q_vector->napi,
 			       xdp_buffer->data_end - xdp_buffer->data_hard_start,
 			       GFP_ATOMIC | __GFP_NOWARN);
+#endif
 	if (unlikely(!skb))
 		return NULL;
 
@@ -837,7 +843,11 @@ int txgbe_clean_rx_irq_zc(struct txgbe_q_vector *q_vector,
 		xdp_res = txgbe_run_xdp_zc(adapter, rx_ring, &xdp);
 #else
 		bi->xdp->data_end = bi->xdp->data + size;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
 		xsk_buff_dma_sync_for_cpu(bi->xdp, rx_ring->xsk_pool);
+#else
+		xsk_buff_dma_sync_for_cpu(bi->xdp);
+#endif
 		xdp_res = txgbe_run_xdp_zc(adapter, rx_ring, bi->xdp);
 #endif
 
@@ -890,8 +900,13 @@ int txgbe_clean_rx_irq_zc(struct txgbe_q_vector *q_vector,
 		txgbe_rx_skb(q_vector, rx_ring, rx_desc, skb);
 	}
 
-	if (xdp_xmit & TXGBE_XDP_REDIR)
+	if (xdp_xmit & TXGBE_XDP_REDIR) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+		xdp_do_flush();
+#else
 		xdp_do_flush_map();
+#endif
+	}
 
 	if (xdp_xmit & TXGBE_XDP_TX) {
 		struct txgbe_ring *ring = adapter->xdp_ring[smp_processor_id() % adapter->num_xdp_queues];

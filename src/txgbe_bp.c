@@ -353,7 +353,7 @@ int clr_bkp_an73_int(unsigned int intIndex, unsigned int intIndexHi, struct txgb
 	return status;
 }
 
-void read_phy_lane_txeq(unsigned short lane, struct txgbe_adapter *adapter)
+static void read_phy_lane_txeq(unsigned short lane, struct txgbe_adapter *adapter)
 {
 	struct txgbe_hw *hw = &adapter->hw;
 	unsigned int addr, rdata;
@@ -388,7 +388,7 @@ void read_phy_lane_txeq(unsigned short lane, struct txgbe_adapter *adapter)
 **- bits[1:0] =2'b11: Enable the CL72 KR training
 **- bits[1:0] =2'b01: Disable the CL72 KR training
 */
-int en_cl72_krtr(unsigned int enable, struct txgbe_adapter *adapter)
+static int en_cl72_krtr(unsigned int enable, struct txgbe_adapter *adapter)
 {
 	struct txgbe_hw *hw = &adapter->hw;
 	unsigned int wdata = 0;
@@ -428,7 +428,7 @@ int en_cl72_krtr(unsigned int enable, struct txgbe_adapter *adapter)
 	return 0;
 }
 
-int chk_cl72_krtr_status(struct txgbe_adapter *adapter)
+static int chk_cl72_krtr_status(struct txgbe_adapter *adapter)
 {
 	struct txgbe_hw *hw = &adapter->hw;
 	unsigned int rdata = 0, rdata1;

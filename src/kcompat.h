@@ -37,6 +37,10 @@
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
 #include <linux/if_vlan.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,11,0))
+/* The kernel_ethtool_ts_info structure appeared in Linux 6.11 (commit 2111375b85ad). */
+#define HAVE_KERNEL_ETHTOOL_TS_INFO_STRUCT
+#endif
 #include <linux/in.h>
 #include <linux/if_link.h>
 #include <linux/init.h>
@@ -2523,12 +2527,14 @@ void _kc_pci_restore_state(struct pci_dev *);
 void _kc_free_netdev(struct net_device *);
 #define free_netdev(netdev) _kc_free_netdev(netdev)
 #endif
+#ifndef CONFIG_PCI_ERS
 static inline int pci_enable_pcie_error_reporting(struct pci_dev __always_unused *dev)
 {
 	return 0;
 }
 #define pci_disable_pcie_error_reporting(dev) do {} while (0)
 #define pci_cleanup_aer_uncorrect_error_status(dev) do {} while (0)
+#endif /* !CONFIG_PCI_ERS */
 
 void *_kc_kmemdup(const void *src, size_t len, unsigned gfp);
 #define kmemdup(src, len, gfp) _kc_kmemdup(src, len, gfp)
