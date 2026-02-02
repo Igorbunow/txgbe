@@ -17,6 +17,12 @@
 #
 ################################################################################
 
+# Determine driver source path for generated script invocation.
+TXGBE_MAKEFILE := $(lastword $(MAKEFILE_LIST))
+TXGBE_SRCDIR := $(dir $(abspath $(TXGBE_MAKEFILE)))
+KCOMPAT_GENERATOR := $(TXGBE_SRCDIR)generated.sh
+# Add auto-generation for kcompat defs when building under kbuild,
+# otherwise rely on the kcompat-generated target defined near the end.
 ifneq ($(KERNELRELEASE),)
 # kbuild part of makefile
 #
@@ -54,6 +60,11 @@ txgbe-$(CONFIG_PTP_1588_CLOCK:m=y) += txgbe_ptp.o
 txgbe-${CONFIG_SYSFS} += txgbe_sysfs.o
 
 txgbe-y += kcompat.o
+
+KCOMPAT_GENERATED_FILE := kcompat_generated_defs.h
+KCOMPAT_KERNELSRC := $(if $(KERNELDIR),$(KERNELDIR),$(srctree))
+$(shell cd "$(TXGBE_SRCDIR)" && ./generated.sh "$(KCOMPAT_KERNELSRC)")
+clean-files += $(KCOMPAT_GENERATED_FILE)
 
 else	# ifneq($(KERNELRELEASE),)
 # normal makefile
@@ -140,6 +151,7 @@ manfile:
 clean:
 	@+$(call devkernelbuild,clean)
 	@-rm -rf *.${MANSECTION}.gz *.ko
+	@-rm -f kcompat_generated_defs.h
 
 
 # Install the modules and manpage
@@ -227,6 +239,22 @@ help:
 	@echo ' Other variables may be available for tuning make process, see'
 	@echo ' Kernel Kbuild documentation for more information'
 
-.PHONY: default noisy clean manfile silent sparse ccc modules_install mandocs_install install modules_uninstall mandocs_uninstall uninstall help
+.PHONY: default noisy clean manfile silent sparse ccc modules_install mandocs_install install modules_uninstall mandocs_uninstall uninstall help kcompat-generated
 
 endif	# ifneq($(KERNELRELEASE),)
+#############################
+# Generated definitions hook #
+#############################
+
+KCOMPAT_GENERATED_FILE := kcompat_generated_defs.h
+
+.PHONY: kcompat-generated
+kcompat-generated: $(KCOMPAT_GENERATED_FILE)
+
+$(KCOMPAT_GENERATED_FILE): generated.sh
+	@if [ -z "$(KERNELDIR)" ]; then \
+		echo "KERNELDIR must be exported to point to the kernel source tree."; \
+		exit 1; \
+	fi
+	@echo "Generating $@ from $(KERNELDIR)"
+	@./generated.sh "$(KERNELDIR)"
