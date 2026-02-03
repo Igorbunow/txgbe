@@ -33,16 +33,22 @@ STRICT=0
 # Can be set via env CONFIG_DIR=... or CLI --config-dir ...
 CONFIG_DIR="${CONFIG_DIR:-}"
 
+# Optional "latest" behavior (default OFF):
+#  - LATEST_ALL=1          : try to use latest available versions for ALL series
+#  - LATEST_ON_BROKEN=1    : try to use latest available only when the pinned one is broken/unavailable
+LATEST_ALL="${LATEST_ALL:-0}"
+LATEST_ON_BROKEN="${LATEST_ON_BROKEN:-0}"
+
 CDN_BASE="https://cdn.kernel.org/pub/linux/kernel"
 
 SERIES_LIST=("4.19" "5.4" "5.10" "5.15" "6.1" "6.6" "6.12" "6.18")
 
 usage() {
   cat <<EOF
-Usage: $0 [--releases-json /path/to/releases.json] [--config-dir /path] [--force] [--strict]
+Usage: $0 [--releases-json /path/to/releases.json] [--config-dir /path] [--latest-all] [--latest-on-broken] [--force] [--strict]
 
 Environment overrides:
-  ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON, CONFIG_DIR
+  ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON, CONFIG_DIR, LATEST_ALL, LATEST_ON_BROKEN
 
 If RELEASES_JSON is provided and points to an existing file, it will be used
 instead of fetching ${RELEASES_JSON_URL}.
@@ -63,6 +69,11 @@ Options:
   --force-extract         Only re-extract sources.
   --force-prepare         Only re-run defconfig/olddefconfig/modules_prepare.
   --strict                Fail on missing tarball/HTTP errors (default: skip missing versions).
+  --latest-all            (default OFF) For each series, try to use the newest available version
+                          according to kernel.org releases.json AND present on CDN.
+                          If a series is EOL and missing from kernel.org releases.json, pinned version is kept.
+  --latest-on-broken      (default OFF) Use pinned version by default; if tarball is missing/corrupted,
+                          attempt to fall back to newest available version for that series (present on CDN).
   -h, --help              Show this help.
 EOF
 }
@@ -80,6 +91,14 @@ parse_args() {
         shift
         [[ $# -gt 0 ]] || { echo "ERROR: --config-dir requires a path" >&2; exit 1; }
         CONFIG_DIR="$1"
+        shift
+        ;;
+      --latest-all)
+        LATEST_ALL=1
+        shift
+        ;;
+      --latest-on-broken)
+        LATEST_ON_BROKEN=1
         shift
         ;;
       --force)
@@ -124,6 +143,24 @@ need_cmd() {
   }
 }
 
+tmp_fetch_kernelorg_releases_json() {
+  # Fetch kernel.org releases.json into a temp file and echo its path.
+  # Returns empty string if fetch fails (and not strict).
+  local t
+  t="$(mktemp)"
+  if curl -fsSL "${RELEASES_JSON_URL}" -o "${t}" >/dev/null 2>&1; then
+    echo "${t}"
+    return 0
+  fi
+  rm -f "${t}"
+  if [[ ${STRICT} -eq 1 ]]; then
+    echo "ERROR: failed to fetch ${RELEASES_JSON_URL} for latest resolution" >&2
+    exit 1
+  fi
+  echo ""
+  return 0
+}
+
 as_root_hint() {
   if [[ $EUID -ne 0 ]]; then
     echo "ERROR: must be run as root (or via sudo) to write into ${BASE_DIR}" >&2
@@ -135,6 +172,53 @@ http_exists() {
   # Return 0 if URL exists (HTTP 200/3xx), else 1.
   local url="$1"
   curl -fsI "${url}" >/dev/null 2>&1
+}
+
+tarball_url_for_version() {
+  local version="$1"
+  local vdir
+  vdir="$(major_dir_for_version "${version}")"
+  local tb
+  tb="$(tarball_name_for_version "${version}")"
+  echo "${CDN_BASE}/${vdir}/${tb}"
+}
+
+resolve_latest_available_for_series() {
+  # Given kernel.org releases.json file and series "6.6", pick highest version "6.6.*"
+  # that is also present on CDN (HEAD OK). Echo version or empty if none found.
+  local kernelorg_json="$1"
+  local series="$2"
+
+  if [[ -z "${kernelorg_json}" || ! -f "${kernelorg_json}" ]]; then
+    echo ""
+    return 0
+  fi
+
+  local candidates
+  candidates="$(jq -r --arg s "${series}." '
+    .releases[]? | select(.version? and (.version | startswith($s))) | .version
+  ' "${kernelorg_json}" 2>/dev/null | sort -V)"
+
+  if [[ -z "${candidates}" ]]; then
+    echo ""
+    return 0
+  fi
+
+  # iterate from newest to oldest
+  local v
+  while read -r v; do
+    : # placeholder
+  done < /dev/null
+
+  # reverse by sorting -V then tac
+  while read -r v; do
+    if http_exists "$(tarball_url_for_version "${v}")"; then
+      echo "${v}"
+      return 0
+    fi
+  done < <(echo "${candidates}" | tac)
+
+  echo ""
 }
 
 series_from_version() {
@@ -244,7 +328,8 @@ download_tarball() {
   vdir="$(major_dir_for_version "${version}")"
   local tb
   tb="$(tarball_name_for_version "${version}")"
-  local url="${CDN_BASE}/${vdir}/${tb}"
+  local url
+  url="$(tarball_url_for_version "${version}")"
 
   mkdir -p "${dest_dir}"
 
@@ -252,7 +337,7 @@ download_tarball() {
   tarball_ensure_valid "${dest_dir}/${tb}"
 
   if [[ -f "${dest_dir}/${tb}" && ${FORCE_DOWNLOAD} -eq 0 ]]; then
-    echo "Tarball already exists (skip): ${dest_dir}/${tb}"
+    echo "Tarball already exists (skip): ${dest_dir}/${tb}" >&2
     return 0
   fi
 
@@ -266,7 +351,7 @@ download_tarball() {
     return 2
   fi
 
-  echo "Downloading ${url}"
+  echo "Downloading ${url}" >&2
   curl -fL --retry 3 --retry-delay 2 -o "${dest_dir}/${tb}" "${url}"
 
   # Validate downloaded tarball; if broken, retry once (non-strict) or fail (strict).
@@ -282,36 +367,83 @@ download_tarball() {
   fi
 }
 
+download_tarball_with_latest_fallback_if_enabled() {
+  # Try downloading pinned version. If missing/broken and LATEST_ON_BROKEN=1,
+  # try resolving latest available for that series and download it instead.
+  # Echo selected version on success, empty on skip/failure (non-strict).
+  local series="$1"
+  local pinned_version="$2"
+  local dest_dir="$3"
+  local kernelorg_json="$4"
+
+  local rc=0
+  if download_tarball "${pinned_version}" "${dest_dir}"; then
+    echo "${pinned_version}"
+    return 0
+  else
+    rc=$?
+  fi
+
+  # download_tarball returns 2 for "skip" due to missing tarball (non-strict).
+  if [[ ${LATEST_ON_BROKEN} -eq 1 && (${rc} -eq 2) ]]; then
+    local latest
+    latest="$(resolve_latest_available_for_series "${kernelorg_json}" "${series}")"
+    if [[ -n "${latest}" && "${latest}" != "${pinned_version}" ]]; then
+      echo "INFO: pinned ${pinned_version} unavailable; trying latest for ${series}: ${latest}" >&2
+      if download_tarball "${latest}" "${dest_dir}"; then
+        echo "${latest}"
+        return 0
+      fi
+    else
+      echo "WARN: no latest available found for ${series} to replace pinned ${pinned_version}" >&2
+    fi
+  fi
+
+  # If strict, download_tarball would have exited already.
+  echo ""
+  return 1
+}
+
 ensure_extracted_sources() {
-  local version="$1"
-  local kroot="$2"   # /opt/kernels/<ver>
+  # Args:
+  #   $1 series (e.g. 5.15)
+  #   $2 pinned_version (e.g. 5.15.166 or already resolved latest)
+  #   $3 kroot (e.g. /opt/kernels/5.15.166)
+  #   $4 kernelorg_json (temp file path or empty)
+  local series="$1"
+  local pinned_version="$2"
+  local kroot="$3"
+  local kernelorg_json="$4"
+
   local src_dir="${kroot}/src"
   local tb_dir="${kroot}/_dl"
 
   mkdir -p "${src_dir}" "${tb_dir}"
 
+  local selected_version=""
+  selected_version="$(download_tarball_with_latest_fallback_if_enabled "${series}" "${pinned_version}" "${tb_dir}" "${kernelorg_json}" || true)"
+  if [[ -z "${selected_version}" ]]; then
+    return 1
+  fi
+
+  # Hard guard: ensure selected_version looks like a kernel version x.y.z
+  if [[ ! "${selected_version}" =~ ^[0-9]+.[0-9]+.[0-9]+$ ]]; then
+    echo "ERROR: internal: selected_version is not a version string: '${selected_version}'" >&2
+    return 1
+  fi
+
   local tb
-  tb="$(tarball_name_for_version "${version}")"
-
-  if ! download_tarball "${version}" "${tb_dir}"; then
-    # download_tarball already handled strict/non-strict
-    return 1
-  fi
-
-  # download_tarball may return 2 to indicate "skip"
-  if [[ ! -f "${tb_dir}/${tb}" ]]; then
-    return 1
-  fi
+  tb="$(tarball_name_for_version "${selected_version}")"
 
   local extracted
-  extracted="$(extract_src_dirname "${version}")"
+  extracted="$(extract_src_dirname "${selected_version}")"
 
   if [[ -d "${src_dir}/${extracted}" && ${FORCE_EXTRACT} -eq 0 ]]; then
-    echo "Sources already extracted (skip): ${src_dir}/${extracted}"
+    echo "Sources already extracted (skip): ${src_dir}/${extracted}" >&2
     return 0
   fi
 
-  echo "Extracting ${tb_dir}/${tb} -> ${src_dir}"
+  echo "Extracting ${tb_dir}/${tb} -> ${src_dir}" >&2
   rm -rf "${src_dir:?}/${extracted}"
   tar -C "${src_dir}" -xf "${tb_dir}/${tb}"
 
@@ -434,9 +566,16 @@ main() {
 
   mkdir -p "${BASE_DIR}"
 
+  # Optional kernel.org releases.json used for "latest" resolution
+  KERNELORG_JSON=""
+  if [[ ${LATEST_ALL} -eq 1 || ${LATEST_ON_BROKEN} -eq 1 ]]; then
+    KERNELORG_JSON="$(tmp_fetch_kernelorg_releases_json)"
+    [[ -n "${KERNELORG_JSON}" ]] && echo "INFO: fetched kernel.org releases.json for latest resolution: ${KERNELORG_JSON}"
+  fi
+
   # tmp file must be global-safe for trap under 'set -u'
   TMP_JSON="$(mktemp)"
-  trap 'rm -f "${TMP_JSON:-}"' EXIT
+  trap 'rm -f "${TMP_JSON:-}" "${KERNELORG_JSON:-}"' EXIT
 
   fetch_releases_json "${TMP_JSON}"
 
@@ -449,6 +588,18 @@ main() {
       echo "ERROR: could not find any release for series ${s} in releases.json" >&2
       exit 1
     fi
+
+    if [[ ${LATEST_ALL} -eq 1 ]]; then
+      latest="$(resolve_latest_available_for_series "${KERNELORG_JSON}" "${s}")"
+      if [[ -n "${latest}" && "${latest}" != "${v}" ]]; then
+        echo "INFO: series ${s}: pinned ${v} -> latest ${latest}" >&2
+        v="${latest}"
+      else
+        # If EOL series isn't present in kernel.org json, keep pinned.
+        [[ -z "${latest}" ]] && echo "INFO: series ${s}: no latest found from kernel.org (EOL?), keep pinned ${v}" >&2
+      fi
+    fi
+
     series_to_version["${s}"]="${v}"
     echo "  ${s} -> ${v}"
   done
@@ -459,7 +610,7 @@ main() {
     v="${series_to_version[${s}]}"
     kroot="${BASE_DIR}/${v}"
 
-    if ! ensure_extracted_sources "${v}" "${kroot}"; then
+    if ! ensure_extracted_sources "${s}" "${v}" "${kroot}" "${KERNELORG_JSON}"; then
       echo "SKIP: ${v} (sources not available / download skipped)" >&2
       echo
       continue
