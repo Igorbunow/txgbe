@@ -16,7 +16,8 @@
 set -euo pipefail
 
 # shellcheck disable=SC2086
-KSRC_PARAM="${1-}"
+KSRC_PARAM="$1"
+KOBJ_PARAM="${2-}"
 
 if [ -z "$KSRC_PARAM" ]; then
     echo "Error: Please provide the kernel directory (KERNELDIR/KSRC) as the first argument." >&2
@@ -56,6 +57,17 @@ find_conffile_in() {
         echo "$d/include/linux/autoconf.h"
         return 0
     fi
+    return 1
+}
+
+find_existing_path() {
+    local paths=("$@")
+    for path in "${paths[@]}"; do
+        if [ -e "$path" ]; then
+            echo "$path"
+            return 0
+        fi
+    done
     return 1
 }
 
@@ -102,24 +114,19 @@ fi
 
 BUILD_DIR="$KSRC_PARAM"
 
-CONFFILE=""
-if find_conffile_in "$BUILD_DIR" >/dev/null 2>&1; then
-    CONFFILE="$(find_conffile_in "$BUILD_DIR")"
-else
-    # Try sibling candidates in common header layouts.
-    for cand in "$BUILD_DIR" "$(dirname "$BUILD_DIR")"; do
-        if [ -e "$cand/include/generated/autoconf.h" ] || [ -e "$cand/include/linux/autoconf.h" ]; then
-            CONFFILE="$(find_conffile_in "$cand")"
-            BUILD_DIR="$cand"
-            break
-        fi
-        if [ -e "$cand/build/include/generated/autoconf.h" ] || [ -e "$cand/build/include/linux/autoconf.h" ]; then
-            CONFFILE="$(find_conffile_in "$cand/build")"
-            BUILD_DIR="$(realpath_f "$cand/build")"
-            break
-        fi
-    done
+CONFIG_PATHS=()
+if [ -n "${KOBJ_PARAM}" ]; then
+    CONFIG_PATHS+=(
+        "${KOBJ_PARAM}/include/generated/autoconf.h"
+        "${KOBJ_PARAM}/include/linux/autoconf.h"
+    )
 fi
+CONFIG_PATHS+=(
+    "${KSRC_PARAM}/include/generated/autoconf.h"
+    "${KSRC_PARAM}/include/linux/autoconf.h"
+)
+
+CONFFILE=$(find_existing_path "${CONFIG_PATHS[@]}")
 
 if [ -z "$CONFFILE" ]; then
     die_prepare_hint

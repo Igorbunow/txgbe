@@ -64,12 +64,20 @@ txgbe-y += kcompat.o
 KCOMPAT_GENERATED_FILE := kcompat_generated_defs.h
 KCOMPAT_STAMP_FILE := .kcompat_kernelsrc
 
-# Kernel build tree to use for feature detection.
-# IMPORTANT: always use the same kernel build tree that kbuild uses for
-# compilation (objtree). Do NOT use KERNELDIR from the environment here:
-# it may point to a different kernel tree and cause false-positive feature
-# detection (and build failures) when switching kernels.
-KCOMPAT_KERNELSRC := $(objtree)
+# Kernel trees used for feature detection.
+#
+# We need both trees:
+#  - srctree: contains full kernel headers (include/linux/...) on split setups
+#            (e.g. Debian linux-headers-*-common).
+#  - objtree: contains generated config headers (include/generated/autoconf.h)
+#            for the exact build/config we are compiling against.
+#
+# IMPORTANT: do NOT use KERNELDIR from the environment here. Always rely on
+# kbuild-provided trees to avoid cross-kernel contamination when switching.
+KCOMPAT_SRCTREE := $(if $(abs_srctree),$(abs_srctree),$(if $(srctree),$(srctree),$(objtree)))
+KCOMPAT_OBJTREE := $(if $(abs_objtree),$(abs_objtree),$(objtree))
+KCOMPAT_KERNEL_ROOT := $(if $(KCOMPAT_SRCTREE),$(KCOMPAT_SRCTREE),$(KCOMPAT_OBJTREE))
+KCOMPAT_SET_IRQ_AFFINITY := $(if $(KCOMPAT_KERNEL_ROOT),$(KCOMPAT_KERNEL_ROOT)/scripts/set_irq_affinity,scripts/set_irq_affinity)
 
 # Ensure kcompat_generated_defs.h is always generated for the current kernel and
 # that switching kernel build tree / KERNELRELEASE forces regeneration and rebuild.
@@ -77,21 +85,28 @@ KCOMPAT_KERNELSRC := $(objtree)
 FORCE:
 
 $(obj)/$(KCOMPAT_STAMP_FILE): FORCE
-	@ksrc="$(KCOMPAT_KERNELSRC)"; \
-	ksrc_real="$$(readlink -f "$$ksrc" 2>/dev/null || realpath "$$ksrc" 2>/dev/null || echo "$$ksrc")"; \
-	new_id="$(KERNELRELEASE) $$ksrc_real"; \
-	if [ ! -f "$@" ] || [ "$$(cat "$@")" != "$$new_id" ]; then \
-		echo "$$new_id" > "$@"; \
+	@if [ -x "$(KCOMPAT_SET_IRQ_AFFINITY)" ]; then \
+		$(KCOMPAT_SET_IRQ_AFFINITY) -e; \
+	fi; \
+	srctree_real="$(KCOMPAT_KERNEL_ROOT)"; \
+	objtree_real="$(KCOMPAT_OBJTREE)"; \
+	new_id="$(KERNELRELEASE) $srctree_real $$objtree_real"; \
+	if [ ! -f "$@" ] || [ "$(cat "$@")" != "$new_id" ]; then \
+		echo "$new_id" > "$@"; \
 	fi
 
 $(obj)/$(KCOMPAT_GENERATED_FILE): $(src)/generated.sh $(obj)/$(KCOMPAT_STAMP_FILE)
-	@ksrc="$(KCOMPAT_KERNELSRC)"; \
-	ksrc_real="$$(readlink -f "$$ksrc" 2>/dev/null || realpath "$$ksrc" 2>/dev/null || echo "$$ksrc")"; \
-	echo "Generating $(KCOMPAT_GENERATED_FILE) for $(KERNELRELEASE) from $$ksrc_real"; \
-	cd "$(src)" && ./generated.sh "$$ksrc_real" >/dev/null; \
+	@if [ -x "$(KCOMPAT_SET_IRQ_AFFINITY)" ]; then \
+		$(KCOMPAT_SET_IRQ_AFFINITY) -e; \
+	fi; \
+	srctree_real="$(KCOMPAT_KERNEL_ROOT)"; \
+	objtree_real="$(KCOMPAT_OBJTREE)"; \
+	echo "Generating $(KCOMPAT_GENERATED_FILE) for $(KERNELRELEASE) from SRCTREE=$$srctree_real OBJTREE=$$objtree_real"; \
+	cd "$(src)" && ./generated.sh "$$srctree_real" "$$objtree_real" >/dev/null; \
 	if [ "$(src)" != "$(obj)" ] && [ -f "$(src)/$(KCOMPAT_GENERATED_FILE)" ]; then \
 		mv -f "$(src)/$(KCOMPAT_GENERATED_FILE)" "$@"; \
-	fi
+	fi; \
+	test -f "$@"
 
 # Make all driver objects depend on the generated header and kernel stamp.
 $(addprefix $(obj)/,$(txgbe-y)): $(obj)/$(KCOMPAT_GENERATED_FILE) $(obj)/$(KCOMPAT_STAMP_FILE)
