@@ -23,3 +23,9 @@ src/.kcompat_kernelsrc
 # Editor/OS junk
 *~
 .DS_Store
+
+# logs
+logs/
+
+
+*.patch
