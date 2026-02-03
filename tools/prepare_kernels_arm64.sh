@@ -29,22 +29,35 @@ FORCE_EXTRACT=0
 FORCE_PREPARE=0
 STRICT=0
 
+# Optional directory with per-kernel configs to import into O= build dir
+# Can be set via env CONFIG_DIR=... or CLI --config-dir ...
+CONFIG_DIR="${CONFIG_DIR:-}"
+
 CDN_BASE="https://cdn.kernel.org/pub/linux/kernel"
 
 SERIES_LIST=("4.19" "5.4" "5.10" "5.15" "6.1" "6.6" "6.12" "6.18")
 
 usage() {
   cat <<EOF
-Usage: $0 [--releases-json /path/to/releases.json] [--force] [--strict]
+Usage: $0 [--releases-json /path/to/releases.json] [--config-dir /path] [--force] [--strict]
 
 Environment overrides:
-  ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON
+  ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON, CONFIG_DIR
 
 If RELEASES_JSON is provided and points to an existing file, it will be used
 instead of fetching ${RELEASES_JSON_URL}.
 
 Options:
   --releases-json <path>  Use local JSON lock-file (your format: {"kernels":[...]}).
+  --config-dir <path>     Try to import .config from this directory before prepare.
+                          Lookup order (first existing wins):
+                            <dir>/<ARCH>/<fullver>/.config
+                            <dir>/<ARCH>/<series>/.config
+                            <dir>/<fullver>/.config
+                            <dir>/<series>/.config
+                          Example:
+                            --config-dir /opt/kernel-configs
+                            /opt/kernel-configs/arm64/5.15/.config
   --force                 Re-download tarballs, re-extract sources and re-run modules_prepare.
   --force-download        Only re-download tarballs.
   --force-extract         Only re-extract sources.
@@ -61,6 +74,12 @@ parse_args() {
         shift
         [[ $# -gt 0 ]] || { echo "ERROR: --releases-json requires a path" >&2; exit 1; }
         RELEASES_JSON="$1"
+        shift
+        ;;
+      --config-dir)
+        shift
+        [[ $# -gt 0 ]] || { echo "ERROR: --config-dir requires a path" >&2; exit 1; }
+        CONFIG_DIR="$1"
         shift
         ;;
       --force)
@@ -116,6 +135,42 @@ http_exists() {
   # Return 0 if URL exists (HTTP 200/3xx), else 1.
   local url="$1"
   curl -fsI "${url}" >/dev/null 2>&1
+}
+
+series_from_version() {
+  # Input: full version "6.12.14" -> "6.12"
+  #        full version "4.19.325" -> "4.19"
+  local v="$1"
+  echo "${v%.*}"
+}
+
+tarball_validate() {
+  # Validate that tarball can be listed by tar.
+  # Return 0 if OK, 1 if broken.
+  local tb_path="$1"
+  tar -tf "${tb_path}" >/dev/null 2>&1
+}
+
+tarball_ensure_valid() {
+  # If tarball exists but is broken:
+  #  - strict: exit 1
+  #  - non-strict: delete and let caller re-download
+  local tb_path="$1"
+
+  if [[ ! -f "${tb_path}" ]]; then
+    return 0
+  fi
+  if tarball_validate "${tb_path}"; then
+    return 0
+  fi
+
+  if [[ ${STRICT} -eq 1 ]]; then
+    echo "ERROR: tarball is corrupted: ${tb_path}" >&2
+    exit 1
+  fi
+  echo "WARN: tarball is corrupted, will re-download: ${tb_path}" >&2
+  rm -f "${tb_path}"
+  return 0
 }
 
 major_dir_for_version() {
@@ -192,6 +247,10 @@ download_tarball() {
   local url="${CDN_BASE}/${vdir}/${tb}"
 
   mkdir -p "${dest_dir}"
+
+  # If tarball exists but is broken, remove it (unless strict).
+  tarball_ensure_valid "${dest_dir}/${tb}"
+
   if [[ -f "${dest_dir}/${tb}" && ${FORCE_DOWNLOAD} -eq 0 ]]; then
     echo "Tarball already exists (skip): ${dest_dir}/${tb}"
     return 0
@@ -209,6 +268,18 @@ download_tarball() {
 
   echo "Downloading ${url}"
   curl -fL --retry 3 --retry-delay 2 -o "${dest_dir}/${tb}" "${url}"
+
+  # Validate downloaded tarball; if broken, retry once (non-strict) or fail (strict).
+  if ! tarball_validate "${dest_dir}/${tb}"; then
+    if [[ ${STRICT} -eq 1 ]]; then
+      echo "ERROR: downloaded tarball is corrupted: ${dest_dir}/${tb}" >&2
+      exit 1
+    fi
+    echo "WARN: downloaded tarball corrupted, retrying once: ${dest_dir}/${tb}" >&2
+    rm -f "${dest_dir}/${tb}"
+    curl -fL --retry 3 --retry-delay 2 -o "${dest_dir}/${tb}" "${url}"
+    tarball_validate "${dest_dir}/${tb}" || { echo "ERROR: tarball still corrupted after retry: ${dest_dir}/${tb}" >&2; exit 1; }
+  fi
 }
 
 ensure_extracted_sources() {
@@ -250,6 +321,61 @@ ensure_extracted_sources() {
   fi
 }
 
+find_config_for_kernel() {
+  # Try to locate a .config in CONFIG_DIR for given version.
+  # Prints path if found, else empty.
+  local version="$1"
+  local series
+  series="$(series_from_version "${version}")"
+
+  if [[ -z "${CONFIG_DIR}" ]]; then
+    echo ""
+    return 0
+  fi
+
+  local candidates=(
+    "${CONFIG_DIR}/${ARCH}/${version}/.config"
+    "${CONFIG_DIR}/${ARCH}/${series}/.config"
+    "${CONFIG_DIR}/${version}/.config"
+    "${CONFIG_DIR}/${series}/.config"
+  )
+
+  local c
+  for c in "${candidates[@]}"; do
+    if [[ -f "${c}" ]]; then
+      echo "${c}"
+      return 0
+    fi
+  done
+  echo ""
+}
+
+import_config_if_available() {
+  # Import config into build dir if:
+  #  - config exists in CONFIG_DIR, and
+  #  - build_dir/.config does not exist OR FORCE_PREPARE=1
+  local version="$1"
+  local build_dir="$2"
+
+  local src_cfg
+  src_cfg="$(find_config_for_kernel "${version}")"
+  if [[ -z "${src_cfg}" ]]; then
+    return 0
+  fi
+
+  if [[ -f "${build_dir}/.config" && ${FORCE_PREPARE} -eq 0 ]]; then
+    echo "==> Found external .config but build already has one (skip import): ${build_dir}/.config"
+    echo "    External: ${src_cfg}"
+    return 0
+  fi
+
+  echo "==> Importing .config for ${version}"
+  echo "    From: ${src_cfg}"
+  echo "    To  : ${build_dir}/.config"
+  mkdir -p "${build_dir}"
+  cp -f "${src_cfg}" "${build_dir}/.config"
+}
+
 already_prepared() {
   # Heuristic markers created by Kbuild config/prepare steps.
   local build_dir="$1"
@@ -265,6 +391,9 @@ prepare_modules() {
 
   mkdir -p "${build_dir}"
 
+  # If user provided external configs, import them before any config generation.
+  import_config_if_available "${version}" "${build_dir}"
+
   if [[ ${FORCE_PREPARE} -eq 0 ]] && already_prepared "${build_dir}"; then
     echo "==> Kernel ${version} already prepared (skip)"
     echo "    BUILD: ${build_dir}"
@@ -275,6 +404,9 @@ prepare_modules() {
   echo "    SRC : ${src_dir}"
   echo "    BUILD: ${build_dir}"
   echo "    ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}"
+  if [[ -n "${CONFIG_DIR}" ]]; then
+    echo "    CONFIG_DIR=${CONFIG_DIR}"
+  fi
 
   # Minimal config; for best ABI match you should copy target .config into build_dir/.config beforehand.
   if [[ ! -f "${build_dir}/.config" ]]; then
