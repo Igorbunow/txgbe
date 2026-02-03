@@ -33,6 +33,9 @@ STRICT=0
 # Can be set via env CONFIG_DIR=... or CLI --config-dir ...
 CONFIG_DIR="${CONFIG_DIR:-}"
 
+# Dry-run mode (default OFF): show plan, do not download/extract/prepare
+DRY_RUN="${DRY_RUN:-0}"
+
 # Optional "latest" behavior (default OFF):
 #  - LATEST_ALL=1          : try to use latest available versions for ALL series
 #  - LATEST_ON_BROKEN=1    : try to use latest available only when the pinned one is broken/unavailable
@@ -45,10 +48,10 @@ SERIES_LIST=("4.19" "5.4" "5.10" "5.15" "6.1" "6.6" "6.12" "6.18")
 
 usage() {
   cat <<EOF
-Usage: $0 [--releases-json /path/to/releases.json] [--config-dir /path] [--latest-all] [--latest-on-broken] [--force] [--strict]
+Usage: $0 [--releases-json /path/to/releases.json] [--config-dir /path] [--latest-all] [--latest-on-broken] [--dry-run] [--force] [--strict]
 
 Environment overrides:
-  ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON, CONFIG_DIR, LATEST_ALL, LATEST_ON_BROKEN
+  ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON, CONFIG_DIR, LATEST_ALL, LATEST_ON_BROKEN, DRY_RUN
 
 If RELEASES_JSON is provided and points to an existing file, it will be used
 instead of fetching ${RELEASES_JSON_URL}.
@@ -74,6 +77,7 @@ Options:
                           If a series is EOL and missing from kernel.org releases.json, pinned version is kept.
   --latest-on-broken      (default OFF) Use pinned version by default; if tarball is missing/corrupted,
                           attempt to fall back to newest available version for that series (present on CDN).
+  --dry-run               (default OFF) Print plan only; do not download, extract, or run make.
   -h, --help              Show this help.
 EOF
 }
@@ -99,6 +103,10 @@ parse_args() {
         ;;
       --latest-on-broken)
         LATEST_ON_BROKEN=1
+        shift
+        ;;
+      --dry-run)
+        DRY_RUN=1
         shift
         ;;
       --force)
@@ -174,6 +182,11 @@ http_exists() {
   curl -fsI "${url}" >/dev/null 2>&1
 }
 
+is_prepared_markers_present() {
+  local build_dir="$1"
+  [[ -f "${build_dir}/include/generated/autoconf.h" ]] && [[ -f "${build_dir}/include/config/auto.conf" ]]
+}
+
 tarball_url_for_version() {
   local version="$1"
   local vdir
@@ -181,6 +194,64 @@ tarball_url_for_version() {
   local tb
   tb="$(tarball_name_for_version "${version}")"
   echo "${CDN_BASE}/${vdir}/${tb}"
+}
+
+print_plan_for_kernel() {
+  # Print what would be done for a given resolved version.
+  local series="$1"
+  local version="$2"
+
+  local kroot="${BASE_DIR}/${version}"
+  local tb_dir="${kroot}/_dl"
+  local src_root="${kroot}/src"
+  local build_dir="${kroot}/build-${ARCH}"
+  local tb_name
+  tb_name="$(tarball_name_for_version "${version}")"
+  local tb_path="${tb_dir}/${tb_name}"
+  local src_dir="${src_root}/$(extract_src_dirname "${version}")"
+  local url
+  url="$(tarball_url_for_version "${version}")"
+
+  echo "==> DRY-RUN: ${series} -> ${version}"
+  echo "    URL      : ${url}"
+  echo "    KROOT    : ${kroot}"
+  echo "    TARBALL  : ${tb_path}"
+  echo "    SRC_DIR  : ${src_dir}"
+  echo "    BUILD_DIR: ${build_dir}"
+
+  local tb_state="missing"
+  if [[ -f "${tb_path}" ]]; then
+    if tarball_validate "${tb_path}"; then
+      tb_state="present+valid"
+    else
+      tb_state="present+corrupt"
+    fi
+  fi
+
+  local src_state="missing"
+  [[ -d "${src_dir}" ]] && src_state="present"
+
+  local prep_state="missing"
+  is_prepared_markers_present "${build_dir}" && prep_state="prepared"
+
+  echo "    STATE    : tarball=${tb_state}, sources=${src_state}, build=${prep_state}"
+
+  local action_download="skip"
+  local action_extract="skip"
+  local action_prepare="skip"
+
+  if [[ ${FORCE_DOWNLOAD} -eq 1 || ! -f "${tb_path}" ]]; then
+    action_download="download"
+  fi
+  if [[ ${FORCE_EXTRACT} -eq 1 || ! -d "${src_dir}" ]]; then
+    action_extract="extract"
+  fi
+  if [[ ${FORCE_PREPARE} -eq 1 || ! $(is_prepared_markers_present "${build_dir}"; echo $?) -eq 0 ]]; then
+    action_prepare="prepare"
+  fi
+
+  echo "    WOULD DO : ${action_download}, ${action_extract}, ${action_prepare}"
+  echo
 }
 
 resolve_latest_available_for_series() {
@@ -603,6 +674,18 @@ main() {
     series_to_version["${s}"]="${v}"
     echo "  ${s} -> ${v}"
   done
+
+  if [[ ${DRY_RUN} -eq 1 ]]; then
+    echo
+    echo "DRY-RUN mode enabled: no downloads/extracts/make will be executed."
+    echo "Planned actions under ${BASE_DIR}:"
+    echo
+    for s in "${SERIES_LIST[@]}"; do
+      v="${series_to_version[${s}]}"
+      print_plan_for_kernel "${s}" "${v}"
+    done
+    exit 0
+  fi
 
   echo
   echo "Preparing trees under ${BASE_DIR}:"
