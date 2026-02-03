@@ -62,9 +62,38 @@ txgbe-${CONFIG_SYSFS} += txgbe_sysfs.o
 txgbe-y += kcompat.o
 
 KCOMPAT_GENERATED_FILE := kcompat_generated_defs.h
-KCOMPAT_KERNELSRC := $(if $(KERNELDIR),$(KERNELDIR),$(srctree))
-$(shell cd "$(TXGBE_SRCDIR)" && ./generated.sh "$(KCOMPAT_KERNELSRC)")
-clean-files += $(KCOMPAT_GENERATED_FILE)
+KCOMPAT_STAMP_FILE := .kcompat_kernelsrc
+
+# Kernel build tree to use for feature detection. Prefer the kernel build output
+# (objtree), since autoconf.h is generated there for out-of-tree kernel builds.
+KCOMPAT_KERNELSRC := $(if $(KERNELDIR),$(KERNELDIR),$(objtree))
+
+# Ensure kcompat_generated_defs.h is always generated for the current kernel and
+# that switching KERNELDIR / KERNELRELEASE forces regeneration and rebuild.
+.PHONY: FORCE
+FORCE:
+
+$(obj)/$(KCOMPAT_STAMP_FILE): FORCE
+	@ksrc="$(KCOMPAT_KERNELSRC)"; \
+	ksrc_real="$$(readlink -f "$$ksrc" 2>/dev/null || realpath "$$ksrc" 2>/dev/null || echo "$$ksrc")"; \
+	new_id="$(KERNELRELEASE) $$ksrc_real"; \
+	if [ ! -f "$@" ] || [ "$$(cat "$@")" != "$$new_id" ]; then \
+		echo "$$new_id" > "$@"; \
+	fi
+
+$(obj)/$(KCOMPAT_GENERATED_FILE): $(src)/generated.sh $(obj)/$(KCOMPAT_STAMP_FILE)
+	@ksrc="$(KCOMPAT_KERNELSRC)"; \
+	ksrc_real="$$(readlink -f "$$ksrc" 2>/dev/null || realpath "$$ksrc" 2>/dev/null || echo "$$ksrc")"; \
+	echo "Generating $(KCOMPAT_GENERATED_FILE) for $(KERNELRELEASE) from $$ksrc_real"; \
+	cd "$(src)" && ./generated.sh "$$ksrc_real" >/dev/null; \
+	if [ "$(src)" != "$(obj)" ] && [ -f "$(src)/$(KCOMPAT_GENERATED_FILE)" ]; then \
+		mv -f "$(src)/$(KCOMPAT_GENERATED_FILE)" "$@"; \
+	fi
+
+# Make all driver objects depend on the generated header and kernel stamp.
+$(addprefix $(obj)/,$(txgbe-y)): $(obj)/$(KCOMPAT_GENERATED_FILE) $(obj)/$(KCOMPAT_STAMP_FILE)
+
+clean-files += $(KCOMPAT_GENERATED_FILE) $(KCOMPAT_STAMP_FILE)
 
 else	# ifneq($(KERNELRELEASE),)
 # normal makefile
@@ -152,6 +181,7 @@ clean:
 	@+$(call devkernelbuild,clean)
 	@-rm -rf *.${MANSECTION}.gz *.ko
 	@-rm -f kcompat_generated_defs.h
+	@-rm -f .kcompat_kernelsrc
 
 
 # Install the modules and manpage
@@ -246,15 +276,27 @@ endif	# ifneq($(KERNELRELEASE),)
 # Generated definitions hook #
 #############################
 
+ifeq ($(KERNELRELEASE),)
 KCOMPAT_GENERATED_FILE := kcompat_generated_defs.h
+KCOMPAT_STAMP_FILE := .kcompat_kernelsrc
+
+.PHONY: FORCE
+FORCE:
 
 .PHONY: kcompat-generated
 kcompat-generated: $(KCOMPAT_GENERATED_FILE)
 
-$(KCOMPAT_GENERATED_FILE): generated.sh
+$(KCOMPAT_STAMP_FILE): FORCE
 	@if [ -z "$(KERNELDIR)" ]; then \
 		echo "KERNELDIR must be exported to point to the kernel source tree."; \
 		exit 1; \
+	fi; \
+	ksrc_real="$$(readlink -f "$(KERNELDIR)" 2>/dev/null || realpath "$(KERNELDIR)" 2>/dev/null || echo "$(KERNELDIR)")"; \
+	if [ ! -f "$@" ] || [ "$$(cat "$@")" != "$$ksrc_real" ]; then \
+		echo "$$ksrc_real" > "$@"; \
 	fi
-	@echo "Generating $@ from $(KERNELDIR)"
-	@./generated.sh "$(KERNELDIR)"
+
+$(KCOMPAT_GENERATED_FILE): generated.sh $(KCOMPAT_STAMP_FILE)
+	@echo "Generating $@ from $$(cat $(KCOMPAT_STAMP_FILE))"
+	@./generated.sh "$$(cat $(KCOMPAT_STAMP_FILE))"
+endif

@@ -1,0 +1,95 @@
+name: txgbe build matrix
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # NOTE:
+    # - For real use, prefer a self-hosted runner where you can pre-install and cache
+    #   multiple prepared kernel trees/headers.
+    # - Replace 'ubuntu-latest' with 'self-hosted' (or your labels) if desired.
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # TODO: Replace kdir paths with actual kernel build trees or prepared headers on your runner.
+          # KERNELDIR should point to a directory that contains:
+          #   - include/generated/autoconf.h  (or include/linux/autoconf.h on very old trees)
+          # and is suitable for: make -C "$KERNELDIR" M="$PWD/src" modules
+          - kernel: "4.19"
+            kdir: "/opt/kernels/linux-4.19"
+          - kernel: "5.4"
+            kdir: "/opt/kernels/linux-5.4"
+          - kernel: "5.10"
+            kdir: "/opt/kernels/linux-5.10"
+          - kernel: "5.15"
+            kdir: "/opt/kernels/linux-5.15"
+          - kernel: "6.1"
+            kdir: "/opt/kernels/linux-6.1"
+          - kernel: "6.6"
+            kdir: "/opt/kernels/linux-6.6"
+          - kernel: "6.12"
+            kdir: "/opt/kernels/linux-6.12"
+          - kernel: "6.18"
+            kdir: "/opt/kernels/linux-6.18"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          set -eux
+          uname -a
+          gcc --version
+          make --version
+
+      - name: Validate kernel tree path
+        env:
+          KERNELDIR: ${{ matrix.kdir }}
+        run: |
+          set -euo pipefail
+          echo "Kernel: ${{ matrix.kernel }}"
+          echo "KERNELDIR=$KERNELDIR"
+          if [ ! -d "$KERNELDIR" ]; then
+            echo "::error::KERNELDIR does not exist: $KERNELDIR"
+            echo "Provide prepared kernel trees/headers on the runner, or modify the workflow."
+            exit 1
+          fi
+
+      - name: Prepare kernel headers (optional)
+        env:
+          KERNELDIR: ${{ matrix.kdir }}
+        run: |
+          set -euo pipefail
+          if [ -f "$KERNELDIR/include/generated/autoconf.h" ] || [ -f "$KERNELDIR/include/linux/autoconf.h" ]; then
+            echo "Kernel config header found, skipping modules_prepare."
+            exit 0
+          fi
+
+          echo "Kernel tree not prepared (autoconf.h not found)."
+          echo "Running: make -C \"$KERNELDIR\" olddefconfig prepare modules_prepare"
+          make -C "$KERNELDIR" olddefconfig
+          make -C "$KERNELDIR" prepare modules_prepare
+
+      - name: Build module
+        env:
+          KERNELDIR: ${{ matrix.kdir }}
+        run: |
+          set -euo pipefail
+          LOG="build-${{ matrix.kernel }}.log"
+          make -C "$KERNELDIR" M="${GITHUB_WORKSPACE}/src" clean
+          make -C "$KERNELDIR" M="${GITHUB_WORKSPACE}/src" modules V=1 2>&1 | tee "$LOG"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.kernel }}
+          path: build-${{ matrix.kernel }}.log
+
