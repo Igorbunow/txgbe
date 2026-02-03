@@ -64,12 +64,15 @@ txgbe-y += kcompat.o
 KCOMPAT_GENERATED_FILE := kcompat_generated_defs.h
 KCOMPAT_STAMP_FILE := .kcompat_kernelsrc
 
-# Kernel build tree to use for feature detection. Prefer the kernel build output
-# (objtree), since autoconf.h is generated there for out-of-tree kernel builds.
-KCOMPAT_KERNELSRC := $(if $(KERNELDIR),$(KERNELDIR),$(objtree))
+# Kernel build tree to use for feature detection.
+# IMPORTANT: always use the same kernel build tree that kbuild uses for
+# compilation (objtree). Do NOT use KERNELDIR from the environment here:
+# it may point to a different kernel tree and cause false-positive feature
+# detection (and build failures) when switching kernels.
+KCOMPAT_KERNELSRC := $(objtree)
 
 # Ensure kcompat_generated_defs.h is always generated for the current kernel and
-# that switching KERNELDIR / KERNELRELEASE forces regeneration and rebuild.
+# that switching kernel build tree / KERNELRELEASE forces regeneration and rebuild.
 .PHONY: FORCE
 FORCE:
 

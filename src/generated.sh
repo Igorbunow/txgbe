@@ -1,96 +1,135 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+
+# This helper normalizes the various kernel header/source layouts into the
+# KSRC/CONFFILE inputs expected by kcompat-generator.sh.
+#
+# The build system may pass:
+#  - a kernel build output directory ("objtree")
+#  - a kernel source directory
+#  - a distro headers directory which contains "build" and/or "source" symlinks
+#
+# We prefer:
+#  - CONFFILE from the *build* directory (include/generated/autoconf.h)
+#  - KSRC from the *source* directory (must contain include/linux/kernel.h)
+
+set -euo pipefail
 
 # shellcheck disable=SC2086
-KSRC_PARAM="$1"
+KSRC_PARAM="${1-}"
 
 if [ -z "$KSRC_PARAM" ]; then
-    echo "Error: Please provide the KSRC parameter."
+    echo "Error: Please provide the kernel directory (KERNELDIR/KSRC) as the first argument." >&2
     exit 1
 fi
 
-find_existing_path() {
-    for path in "$@"; do
-        if [ -e "$path" ]; then
-            echo "$path"
-            return
-        fi
-    done
+die_prepare_hint() {
+    cat >&2 <<'EOF'
+Error: cannot find kernel configuration header (autoconf.h).
+
+Hints:
+  - If you are using a full kernel source tree, run:
+        make olddefconfig && make modules_prepare
+  - If you are using distro kernel headers, ensure the headers package is installed
+    and pass the corresponding KERNELDIR (often /lib/modules/<ver>/build).
+EOF
+    exit 1
 }
 
-CONFIG_PATHS=(
-    "${KSRC_PARAM}/include/generated/autoconf.h"
-    "${KSRC_PARAM}/include/linux/autoconf.h"
-)
+realpath_f() {
+    # Portable "realpath": prefer readlink -f, fallback to realpath.
+    local p="$1"
+    readlink -f "$p" 2>/dev/null || realpath "$p" 2>/dev/null || echo "$p"
+}
 
-CONFFILE=$(find_existing_path "${CONFIG_PATHS[@]}")
+is_kernel_tree() {
+    [ -e "$1/Makefile" ] && [ -d "$1/include" ]
+}
 
-PARENT_DIR=$(dirname "$KSRC_PARAM")
-VERSION_ROOT=$(basename "$KSRC_PARAM")
-VERSION_ROOT=${VERSION_ROOT%-common}
-VERSION_ROOT=${VERSION_ROOT%-amd64}
-VERSION_ROOT=${VERSION_ROOT%-generic}
+find_conffile_in() {
+    local d="$1"
+    if [ -e "$d/include/generated/autoconf.h" ]; then
+        echo "$d/include/generated/autoconf.h"
+        return 0
+    fi
+    if [ -e "$d/include/linux/autoconf.h" ]; then
+        echo "$d/include/linux/autoconf.h"
+        return 0
+    fi
+    return 1
+}
 
-if [ -z "$CONFFILE" ]; then
-    if [ -d "$PARENT_DIR" ]; then
-        found=0
-        for candidate in "$PARENT_DIR/${VERSION_ROOT}"*; do
-            [ -e "$candidate" ] || continue
-            for cfg in "$candidate/include/generated/autoconf.h" "$candidate/include/linux/autoconf.h"; do
-                if [ -e "$cfg" ]; then
-                    CONFFILE="$cfg"
-                    found=1
-                    break
-                fi
-            done
-            [ "$found" -eq 1 ] && break
-        done
+find_source_root() {
+    local build_dir="$1"
 
-        if [ "$found" -eq 0 ]; then
-            if [ -n "$VERSION_ROOT" ]; then
-                CONFFILE=$(find "$PARENT_DIR" -maxdepth 5 \
-                    \( -path "*/${VERSION_ROOT}*/include/generated/autoconf.h" -o \
-                       -path "*/${VERSION_ROOT}*/include/linux/autoconf.h" \) \
-                    -print -quit)
-            fi
-        fi
-
-        if [ -z "$CONFFILE" ]; then
-            CONFFILE=$(find "$PARENT_DIR" -maxdepth 5 \
-                \( -path "*/include/generated/autoconf.h" -o \
-                   -path "*/include/linux/autoconf.h" \) \
-                -print -quit)
+    # Prefer "source" symlink commonly provided by kernel header packages and O= builds.
+    if [ -e "$build_dir/source" ]; then
+        local src
+        src="$(realpath_f "$build_dir/source")"
+        if [ -e "$src/include/linux/kernel.h" ]; then
+            echo "$src"
+            return 0
         fi
     fi
+
+    # If build_dir itself looks like a source tree, use it.
+    if [ -e "$build_dir/include/linux/kernel.h" ]; then
+        echo "$build_dir"
+        return 0
+    fi
+
+    # Some layouts provide "KBUILD_SRC"-style sibling named "source" at the parent.
+    if [ -e "$(dirname "$build_dir")/source/include/linux/kernel.h" ]; then
+        echo "$(realpath_f "$(dirname "$build_dir")/source")"
+        return 0
+    fi
+
+    # Fallback: use the directory inferred from CONFFILE.
+    if [ -e "$build_dir/include/linux/kernel.h" ]; then
+        echo "$build_dir"
+        return 0
+    fi
+
+    return 1
+}
+
+KSRC_PARAM="$(realpath_f "$KSRC_PARAM")"
+
+# Resolve "build" symlink if caller passed /lib/modules/<ver> instead of /lib/modules/<ver>/build.
+if [ -e "$KSRC_PARAM/build" ] && is_kernel_tree "$(realpath_f "$KSRC_PARAM/build")"; then
+    KSRC_PARAM="$(realpath_f "$KSRC_PARAM/build")"
 fi
 
-if [ -z "$CONFFILE" ]; then
-    echo "No configuration file found."
-    exit 1
-fi
+BUILD_DIR="$KSRC_PARAM"
 
-CONFIG_ROOT=$(dirname "$(dirname "$(dirname "$CONFFILE")")")
-
-INCLUDE_ROOT="$KSRC_PARAM"
-if [ ! -e "$INCLUDE_ROOT/include/linux/kernel.h" ] && [ -d "$PARENT_DIR" ]; then
-    for candidate in "$PARENT_DIR/${VERSION_ROOT}"*; do
-        [ -e "$candidate/include/linux/kernel.h" ] || continue
-        INCLUDE_ROOT="$candidate"
-        break
+CONFFILE=""
+if find_conffile_in "$BUILD_DIR" >/dev/null 2>&1; then
+    CONFFILE="$(find_conffile_in "$BUILD_DIR")"
+else
+    # Try sibling candidates in common header layouts.
+    for cand in "$BUILD_DIR" "$(dirname "$BUILD_DIR")"; do
+        if [ -e "$cand/include/generated/autoconf.h" ] || [ -e "$cand/include/linux/autoconf.h" ]; then
+            CONFFILE="$(find_conffile_in "$cand")"
+            BUILD_DIR="$cand"
+            break
+        fi
+        if [ -e "$cand/build/include/generated/autoconf.h" ] || [ -e "$cand/build/include/linux/autoconf.h" ]; then
+            CONFFILE="$(find_conffile_in "$cand/build")"
+            BUILD_DIR="$(realpath_f "$cand/build")"
+            break
+        fi
     done
-
-    if [ ! -e "$INCLUDE_ROOT/include/linux/kernel.h" ]; then
-        for pattern in "*/${VERSION_ROOT}*/include/linux/kernel.h" "*/include/linux/kernel.h"; do
-            FOUND_INCLUDE=$(find "$PARENT_DIR" -maxdepth 5 -path "$pattern" -print -quit)
-            if [ -n "$FOUND_INCLUDE" ]; then
-                INCLUDE_ROOT=$(dirname "$(dirname "$FOUND_INCLUDE")")
-                break
-            fi
-        done
-    fi
 fi
 
-if [ ! -e "$INCLUDE_ROOT/include/linux/kernel.h" ]; then
-    INCLUDE_ROOT="$CONFIG_ROOT"
+if [ -z "$CONFFILE" ]; then
+    die_prepare_hint
 fi
 
-KSRC="$INCLUDE_ROOT" OUT=kcompat_generated_defs.h CONFFILE="$CONFFILE" bash kcompat-generator.sh
+KSRC=""
+if ! KSRC="$(find_source_root "$BUILD_DIR")"; then
+    # As a last resort, assume the include directory that contains autoconf.h
+    # is also the include root.
+    KSRC="$(realpath_f "$BUILD_DIR")"
+fi
+
+KSRC="$KSRC" OUT=kcompat_generated_defs.h CONFFILE="$CONFFILE" bash kcompat-generator.sh

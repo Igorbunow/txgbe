@@ -104,7 +104,9 @@ function gen-ethtool() {
 
 function gen-filter() {
 	fh='include/linux/filter.h'
-	gen HAVE_XDP_DO_FLUSH if fun xdp_do_flush_map in "$fh"
+	gen HAVE_XDP_DO_FLUSH if fun xdp_do_flush in "$fh"
+	gen HAVE_XSK_BUFF_DMA_SYNC_FOR_CPU if fun xsk_buff_dma_sync_for_cpu in include/net/xdp_sock_drv.h include/net/xdp_sock.h
+	gen HAVE_XSK_BUFF_DMA_SYNC_FOR_CPU_2_PARAMS if fun xsk_buff_dma_sync_for_cpu matches 'struct xsk_buff_pool \\*' in include/net/xdp_sock_drv.h include/net/xdp_sock.h
 	gen NEED_NO_NETDEV_PROG_XDP_WARN_ACTION if fun bpf_warn_invalid_xdp_action lacks 'struct net_device \\*' in "$fh"
 }
 
@@ -166,6 +168,7 @@ function gen-pci() {
 function gen-other() {
 	ush='include/linux/u64_stats_sync.h'
 	gen HAVE_PCI_ENABLE_PCIE_ERROR_REPORTING if fun pci_enable_pcie_error_reporting in include/linux/aer.h
+	gen HAVE_PCI_DISABLE_PCIE_ERROR_REPORTING if fun pci_disable_pcie_error_reporting in include/linux/aer.h
 	gen NEED_PCI_AER_CLEAR_NONFATAL_STATUS if fun pci_aer_clear_nonfatal_status absent in include/linux/aer.h
 	gen NEED_BITMAP_COPY_CLEAR_TAIL if fun bitmap_copy_clear_tail absent in include/linux/bitmap.h
 	gen NEED_BITMAP_FROM_ARR32 if fun bitmap_from_arr32 absent in include/linux/bitmap.h

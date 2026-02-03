@@ -7005,9 +7005,15 @@ static inline bool __kc_napi_if_scheduled_mark_missed(struct napi_struct *n)
 #endif /* SLE == 12sp5 || SLE >= 15sp1 */
 #else /* >= 4.20.0 */
 #define HAVE_DEVLINK_ESWITCH_OPS_EXTACK
-#ifdef HAVE_XDP_SUPPORT
-#define HAVE_AF_XDP_ZC_SUPPORT
-#endif
+/*
+ * AF_XDP zero-copy (driver-side) support depends on fast-moving kernel APIs.
+ * Do not enable it based purely on the base kernel version here.
+ *
+ * It is instead gated by kcompat_std_defs.h (feature matrix) and/or
+ * kcompat_generated_defs.h (feature probing). This keeps builds stable across
+ * LTS kernels while avoiding accidental enablement on partially-backported
+ * distro trees.
+ */
 #define HAVE_VXLAN_TYPE
 #define HAVE_ETF_SUPPORT /* Earliest TxTime First */
 #endif /* 4.20.0 */

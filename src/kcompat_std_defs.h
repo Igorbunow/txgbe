@@ -179,6 +179,7 @@
 /*****************************************************************************/
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5,11,0))
 #else /* >= 5.11.0 */
+#define HAVE_AF_XDP_ZC_SUPPORT
 #define HAVE_XSK_BATCHED_DESCRIPTOR_INTERFACES
 #define HAVE_PASID_SUPPORT
 #undef HAVE_XDP_RXQ_INFO_REG_3_PARAMS

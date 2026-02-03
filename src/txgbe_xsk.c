@@ -843,10 +843,12 @@ int txgbe_clean_rx_irq_zc(struct txgbe_q_vector *q_vector,
 		xdp_res = txgbe_run_xdp_zc(adapter, rx_ring, &xdp);
 #else
 		bi->xdp->data_end = bi->xdp->data + size;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
+#if defined(HAVE_XSK_BUFF_DMA_SYNC_FOR_CPU_2_PARAMS)
 		xsk_buff_dma_sync_for_cpu(bi->xdp, rx_ring->xsk_pool);
-#else
+#elif defined(HAVE_XSK_BUFF_DMA_SYNC_FOR_CPU)
 		xsk_buff_dma_sync_for_cpu(bi->xdp);
+#else
+		/* TODO: verify if explicit DMA sync is required for this kernel */
 #endif
 		xdp_res = txgbe_run_xdp_zc(adapter, rx_ring, bi->xdp);
 #endif
@@ -901,7 +903,7 @@ int txgbe_clean_rx_irq_zc(struct txgbe_q_vector *q_vector,
 	}
 
 	if (xdp_xmit & TXGBE_XDP_REDIR) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+#ifdef HAVE_XDP_DO_FLUSH
 		xdp_do_flush();
 #else
 		xdp_do_flush_map();

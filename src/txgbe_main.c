@@ -12046,8 +12046,8 @@ static int __devinit txgbe_probe(struct pci_dev *pdev,
 		hw->device_id = pdev->device;
 		vfree(hw);
 	}
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
-		pci_enable_pcie_error_reporting(pdev);
+#ifdef HAVE_PCI_ENABLE_PCIE_ERROR_REPORTING
+	pci_enable_pcie_error_reporting(pdev);
 #endif
 	pci_set_master(pdev);
 	/* errata 16 */
@@ -12792,8 +12792,8 @@ static void __devexit txgbe_remove(struct pci_dev *pdev)
 #endif
 	disable_dev = !test_and_set_bit(__TXGBE_DISABLED, &adapter->state);
 	free_netdev(netdev);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
-		pci_disable_pcie_error_reporting(pdev);
+#ifdef HAVE_PCI_DISABLE_PCIE_ERROR_REPORTING
+	pci_disable_pcie_error_reporting(pdev);
 #endif
 	if (disable_dev)
 		pci_disable_device(pdev);
