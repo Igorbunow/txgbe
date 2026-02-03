@@ -21,19 +21,36 @@ RELEASES_JSON_URL="https://www.kernel.org/releases.json"
 # You can set it via environment: RELEASES_JSON=/etc/kernel-build/releases.json
 # or via CLI: --releases-json /etc/kernel-build/releases.json
 RELEASES_JSON="${RELEASES_JSON:-}"
+
+# Behavior controls:
+#   FORCE_*: re-download / re-extract / re-prepare only on explicit request
+FORCE_DOWNLOAD=0
+FORCE_EXTRACT=0
+FORCE_PREPARE=0
+STRICT=0
+
 CDN_BASE="https://cdn.kernel.org/pub/linux/kernel"
 
 SERIES_LIST=("4.19" "5.4" "5.10" "5.15" "6.1" "6.6" "6.12" "6.18")
 
 usage() {
   cat <<EOF
-Usage: $0 [--releases-json /path/to/releases.json]
+Usage: $0 [--releases-json /path/to/releases.json] [--force] [--strict]
 
 Environment overrides:
   ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON
 
 If RELEASES_JSON is provided and points to an existing file, it will be used
 instead of fetching ${RELEASES_JSON_URL}.
+
+Options:
+  --releases-json <path>  Use local JSON lock-file (your format: {"kernels":[...]}).
+  --force                 Re-download tarballs, re-extract sources and re-run modules_prepare.
+  --force-download        Only re-download tarballs.
+  --force-extract         Only re-extract sources.
+  --force-prepare         Only re-run defconfig/olddefconfig/modules_prepare.
+  --strict                Fail on missing tarball/HTTP errors (default: skip missing versions).
+  -h, --help              Show this help.
 EOF
 }
 
@@ -44,6 +61,28 @@ parse_args() {
         shift
         [[ $# -gt 0 ]] || { echo "ERROR: --releases-json requires a path" >&2; exit 1; }
         RELEASES_JSON="$1"
+        shift
+        ;;
+      --force)
+        FORCE_DOWNLOAD=1
+        FORCE_EXTRACT=1
+        FORCE_PREPARE=1
+        shift
+        ;;
+      --force-download)
+        FORCE_DOWNLOAD=1
+        shift
+        ;;
+      --force-extract)
+        FORCE_EXTRACT=1
+        shift
+        ;;
+      --force-prepare)
+        FORCE_PREPARE=1
+        shift
+        ;;
+      --strict)
+        STRICT=1
         shift
         ;;
       -h|--help)
@@ -71,6 +110,12 @@ as_root_hint() {
     echo "ERROR: must be run as root (or via sudo) to write into ${BASE_DIR}" >&2
     exit 1
   fi
+}
+
+http_exists() {
+  # Return 0 if URL exists (HTTP 200/3xx), else 1.
+  local url="$1"
+  curl -fsI "${url}" >/dev/null 2>&1
 }
 
 major_dir_for_version() {
@@ -147,9 +192,19 @@ download_tarball() {
   local url="${CDN_BASE}/${vdir}/${tb}"
 
   mkdir -p "${dest_dir}"
-  if [[ -f "${dest_dir}/${tb}" ]]; then
-    echo "Tarball already exists: ${dest_dir}/${tb}"
+  if [[ -f "${dest_dir}/${tb}" && ${FORCE_DOWNLOAD} -eq 0 ]]; then
+    echo "Tarball already exists (skip): ${dest_dir}/${tb}"
     return 0
+  fi
+
+  # If not strict, check existence and skip missing versions instead of failing hard.
+  if ! http_exists "${url}"; then
+    if [[ ${STRICT} -eq 1 ]]; then
+      echo "ERROR: tarball not found (HTTP): ${url}" >&2
+      exit 1
+    fi
+    echo "WARN: tarball not found (skip kernel): ${url}" >&2
+    return 2
   fi
 
   echo "Downloading ${url}"
@@ -167,23 +222,38 @@ ensure_extracted_sources() {
   local tb
   tb="$(tarball_name_for_version "${version}")"
 
-  download_tarball "${version}" "${tb_dir}"
+  if ! download_tarball "${version}" "${tb_dir}"; then
+    # download_tarball already handled strict/non-strict
+    return 1
+  fi
+
+  # download_tarball may return 2 to indicate "skip"
+  if [[ ! -f "${tb_dir}/${tb}" ]]; then
+    return 1
+  fi
 
   local extracted
   extracted="$(extract_src_dirname "${version}")"
 
-  if [[ -d "${src_dir}/${extracted}" ]]; then
-    echo "Sources already extracted: ${src_dir}/${extracted}"
+  if [[ -d "${src_dir}/${extracted}" && ${FORCE_EXTRACT} -eq 0 ]]; then
+    echo "Sources already extracted (skip): ${src_dir}/${extracted}"
     return 0
   fi
 
   echo "Extracting ${tb_dir}/${tb} -> ${src_dir}"
+  rm -rf "${src_dir:?}/${extracted}"
   tar -C "${src_dir}" -xf "${tb_dir}/${tb}"
 
   if [[ ! -d "${src_dir}/${extracted}" ]]; then
     echo "ERROR: expected source directory not found after extraction: ${src_dir}/${extracted}" >&2
     exit 1
   fi
+}
+
+already_prepared() {
+  # Heuristic markers created by Kbuild config/prepare steps.
+  local build_dir="$1"
+  [[ -f "${build_dir}/include/generated/autoconf.h" ]] && [[ -f "${build_dir}/include/config/auto.conf" ]]
 }
 
 prepare_modules() {
@@ -194,6 +264,12 @@ prepare_modules() {
   local build_dir="${kroot}/build-${ARCH}"
 
   mkdir -p "${build_dir}"
+
+  if [[ ${FORCE_PREPARE} -eq 0 ]] && already_prepared "${build_dir}"; then
+    echo "==> Kernel ${version} already prepared (skip)"
+    echo "    BUILD: ${build_dir}"
+    return 0
+  fi
 
   echo "==> Preparing kernel ${version}"
   echo "    SRC : ${src_dir}"
@@ -226,17 +302,17 @@ main() {
 
   mkdir -p "${BASE_DIR}"
 
-  local tmp_json
-  tmp_json="$(mktemp)"
-  trap 'rm -f "${tmp_json}"' EXIT
+  # tmp file must be global-safe for trap under 'set -u'
+  TMP_JSON="$(mktemp)"
+  trap 'rm -f "${TMP_JSON:-}"' EXIT
 
-  fetch_releases_json "${tmp_json}"
+  fetch_releases_json "${TMP_JSON}"
 
   echo "Resolving latest versions for requested series:"
   declare -A series_to_version=()
 
   for s in "${SERIES_LIST[@]}"; do
-    v="$(get_latest_version_for_series "${tmp_json}" "${s}")"
+    v="$(get_latest_version_for_series "${TMP_JSON}" "${s}")"
     if [[ -z "${v}" || "${v}" == "null" ]]; then
       echo "ERROR: could not find any release for series ${s} in releases.json" >&2
       exit 1
@@ -251,8 +327,20 @@ main() {
     v="${series_to_version[${s}]}"
     kroot="${BASE_DIR}/${v}"
 
-    ensure_extracted_sources "${v}" "${kroot}"
-    prepare_modules "${v}" "${kroot}"
+    if ! ensure_extracted_sources "${v}" "${kroot}"; then
+      echo "SKIP: ${v} (sources not available / download skipped)" >&2
+      echo
+      continue
+    fi
+
+    prepare_modules "${v}" "${kroot}" || {
+      if [[ ${STRICT} -eq 1 ]]; then
+        exit 1
+      fi
+      echo "WARN: failed to prepare ${v} (skip)" >&2
+      echo
+      continue
+    }
 
     echo "OK: ${v} prepared at:"
     echo "    KERNELDIR=${kroot}/build-${ARCH}"
