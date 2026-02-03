@@ -48,7 +48,7 @@ SERIES_LIST=("4.19" "5.4" "5.10" "5.15" "6.1" "6.6" "6.12" "6.18")
 
 usage() {
   cat <<EOF
-Usage: $0 [--releases-json /path/to/releases.json] [--config-dir /path] [--latest-all] [--latest-on-broken] [--dry-run] [--force] [--strict]
+Usage: $0 [--arch <arch>] [--cross-compile <prefix>] [--releases-json /path/to/releases.json] [--config-dir /path] [--latest-all] [--latest-on-broken] [--dry-run] [--force] [--strict]
 
 Environment overrides:
   ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON, CONFIG_DIR, LATEST_ALL, LATEST_ON_BROKEN, DRY_RUN
@@ -57,6 +57,8 @@ If RELEASES_JSON is provided and points to an existing file, it will be used
 instead of fetching ${RELEASES_JSON_URL}.
 
 Options:
+  --arch <arch>           Target kernel ARCH for preparation (e.g. arm64, x86_64, riscv, arm).
+  --cross-compile <pfx>   CROSS_COMPILE prefix (e.g. aarch64-linux-gnu-). Use empty string for native.
   --releases-json <path>  Use local JSON lock-file (your format: {"kernels":[...]}).
   --config-dir <path>     Try to import .config from this directory before prepare.
                           Lookup order (first existing wins):
@@ -85,6 +87,18 @@ EOF
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --arch)
+        shift
+        [[ $# -gt 0 ]] || { echo "ERROR: --arch requires a value" >&2; exit 1; }
+        ARCH="$1"
+        shift
+        ;;
+      --cross-compile)
+        shift
+        [[ $# -gt 0 ]] || { echo "ERROR: --cross-compile requires a value (can be empty "")" >&2; exit 1; }
+        CROSS_COMPILE="$1"
+        shift
+        ;;
       --releases-json)
         shift
         [[ $# -gt 0 ]] || { echo "ERROR: --releases-json requires a path" >&2; exit 1; }
@@ -149,6 +163,118 @@ need_cmd() {
     echo "ERROR: required command not found: $1" >&2
     exit 1
   }
+}
+
+print_gcc_version_line() {
+  # Print first line of gcc --version (compact for CI logs)
+  local gcc_bin="$1"
+  "${gcc_bin}" --version 2>/dev/null | head -n 1 || true
+}
+
+expected_dumpmachine_substr() {
+  # Return a substring expected to appear in gcc -dumpmachine for given ARCH.
+  # Empty means "unknown, skip check".
+  case "${ARCH}" in
+    arm64)  echo "aarch64" ;;
+    arm)    echo "arm" ;;
+    x86_64) echo "x86_64" ;;
+    riscv)  echo "riscv64" ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+check_toolchain_arch_match() {
+  local gcc_bin="$1"
+  local dm
+  dm="$("${gcc_bin}" -dumpmachine 2>/dev/null || true)"
+  [[ -n "${dm}" ]] && echo "TOOLCHAIN_GCC_DUMPMACHINE=${dm}" >&2
+
+  local expect
+  expect="$(expected_dumpmachine_substr)"
+  [[ -n "${expect}" ]] || return 0
+
+  if [[ "${dm}" != *"${expect}"* ]]; then
+    echo "ERROR: toolchain does not match selected ARCH" >&2
+    echo "       ARCH='${ARCH}' expects gcc -dumpmachine to contain '${expect}'" >&2
+    echo "       but ${gcc_bin} reports: '${dm}'" >&2
+    if [[ "${ARCH}" == "x86_64" ]]; then
+      echo "       Hint: for native x86_64 build, use --cross-compile "" (empty) or install an x86_64 compiler." >&2
+    else
+      echo "       Hint: set --cross-compile to the correct prefix for ARCH=${ARCH} (e.g. arm64 -> aarch64-linux-gnu-)." >&2
+    fi
+    exit 1
+  fi
+}
+
+check_toolchain() {
+  # If CROSS_COMPILE is set (non-empty), require ${CROSS_COMPILE}gcc
+  # Else, require gcc.
+  local gcc_bin=""
+
+  if [[ -n "${CROSS_COMPILE}" ]]; then
+    gcc_bin="${CROSS_COMPILE}gcc"
+  else
+    gcc_bin="gcc"
+  fi
+
+  if ! command -v "${gcc_bin}" >/dev/null 2>&1; then
+    if [[ -n "${CROSS_COMPILE}" ]]; then
+      echo "ERROR: cross-compiler not found: ${gcc_bin}" >&2
+      echo "       CROSS_COMPILE='${CROSS_COMPILE}' (expected '${CROSS_COMPILE}gcc' in PATH)" >&2
+    else
+      echo "ERROR: default compiler not found: gcc" >&2
+      echo "       CROSS_COMPILE is empty; expected 'gcc' in PATH" >&2
+    fi
+    exit 1
+  fi
+
+  echo "TOOLCHAIN_GCC=${gcc_bin}" >&2
+  local vline
+  vline="$(print_gcc_version_line "${gcc_bin}")"
+  [[ -n "${vline}" ]] && echo "TOOLCHAIN_GCC_VERSION=${vline}" >&2
+
+  # Ensure toolchain matches selected ARCH (prevents x86 flags going to aarch64-gcc, etc.)
+  check_toolchain_arch_match "${gcc_bin}"
+}
+
+expected_arch_config_symbol() {
+  # Return the Kconfig symbol expected to be 'y' for the selected ARCH.
+  # Empty output means "unknown, skip check".
+  case "${ARCH}" in
+    arm64)  echo "CONFIG_ARM64" ;;
+    x86_64) echo "CONFIG_X86_64" ;;
+    arm)    echo "CONFIG_ARM" ;;
+    riscv)  echo "CONFIG_RISCV" ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+check_config_matches_arch() {
+  # Verify that .config corresponds to selected ARCH to avoid cases like:
+  #   ARCH=arm64 but CONFIG_X86_64=y -> leads to aarch64-gcc seeing -mcmodel=kernel, etc.
+  local build_dir="$1"
+  local cfg="${build_dir}/.config"
+
+  [[ -f "${cfg}" ]] || return 0
+
+  local sym
+  sym="$(expected_arch_config_symbol)"
+  [[ -n "${sym}" ]] || return 0
+
+  if ! grep -qE "^${sym}=y$" "${cfg}"; then
+    echo "ERROR: .config does not match selected ARCH" >&2
+    echo "       ARCH='${ARCH}' expects '${sym}=y' in ${cfg}" >&2
+    echo "       This usually means you imported/kept a .config for a different architecture." >&2
+    echo "       Fix options:" >&2
+    echo "         1) Provide correct .config via --config-dir (matching ARCH=${ARCH})" >&2
+    echo "         2) Remove the build dir and rerun, or run with --force-prepare" >&2
+    echo "         3) Ensure you didn't set --arch x86_64 with aarch64 CROSS_COMPILE (or vice-versa)" >&2
+    exit 1
+  fi
 }
 
 tmp_fetch_kernelorg_releases_json() {
@@ -597,6 +723,10 @@ prepare_modules() {
   # If user provided external configs, import them before any config generation.
   import_config_if_available "${version}" "${build_dir}"
 
+  # Sanity-check that imported/existing config matches selected ARCH.
+  # Prevents toolchain/arch mismatches (e.g. aarch64-gcc receiving x86_64 flags).
+  check_config_matches_arch "${build_dir}"
+
   if [[ ${FORCE_PREPARE} -eq 0 ]] && already_prepared "${build_dir}"; then
     echo "==> Kernel ${version} already prepared (skip)"
     echo "    BUILD: ${build_dir}"
@@ -628,12 +758,28 @@ main() {
 
   as_root_hint
 
+  # Global configuration print (makes runs self-describing for CI/logs)
+  echo "=== CONFIGURATION ===" >&2
+  echo "ARCH=${ARCH}" >&2
+  echo "CROSS_COMPILE=${CROSS_COMPILE}" >&2
+  echo "BASE_DIR=${BASE_DIR}" >&2
+  echo "JOBS=${JOBS}" >&2
+  [[ -n "${RELEASES_JSON}" ]] && echo "RELEASES_JSON=${RELEASES_JSON}" >&2 || true
+  [[ -n "${CONFIG_DIR}" ]] && echo "CONFIG_DIR=${CONFIG_DIR}" >&2 || true
+  echo "LATEST_ALL=${LATEST_ALL}  LATEST_ON_BROKEN=${LATEST_ON_BROKEN}  DRY_RUN=${DRY_RUN}  STRICT=${STRICT}" >&2
+  echo "FORCE_DOWNLOAD=${FORCE_DOWNLOAD}  FORCE_EXTRACT=${FORCE_EXTRACT}  FORCE_PREPARE=${FORCE_PREPARE}" >&2
+  echo "======================" >&2
+  echo >&2
+
   need_cmd curl
   need_cmd jq
   need_cmd tar
   need_cmd make
   need_cmd sort
   need_cmd xz
+
+  # Toolchain sanity check + version print
+  check_toolchain
 
   mkdir -p "${BASE_DIR}"
 
