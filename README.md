@@ -1,18 +1,16 @@
 # txgbe — Linux kernel module for LR-LINK LRES1002PF-2SFP+ (2×SFP+, 10GbE)
 
-[![downloads](https://img.shields.io/github/downloads/OWNER/REPO/total)](https://github.com/OWNER/REPO/releases)
+[![downloads](https://img.shields.io/github/downloads/Igorbunow/txgbe/total)](https://github.com/Igorbunow/txgbe/releases)
 [![license](https://img.shields.io/badge/License-GPLv2-blue.svg)](./LICENSE)
 [![kernel](https://img.shields.io/badge/kernel-4.19%20%E2%86%92%206.18-success)](#kernel-support)
-[![ci](https://img.shields.io/github/actions/workflow/status/OWNER/REPO/build.yml?branch=main)](https://github.com/OWNER/REPO/actions)
-[![release](https://img.shields.io/github/v/release/OWNER/REPO)](https://github.com/OWNER/REPO/releases)
+[![ci](https://img.shields.io/github/actions/workflow/status/Igorbunow/txgbe/build.yml?branch=main)](https://github.com/Igorbunow/txgbe/actions)
+[![release](https://img.shields.io/github/v/release/Igorbunow/txgbe)](https://github.com/Igorbunow/txgbe/releases)
 
 This repository contains an out-of-tree Linux kernel module (**txgbe**) for the **LR-LINK LRES1002PF-2SFP+**
 (dual SFP+, 10GbE) NIC family.
 
 The main goal of this fork is **stable multi-LTS kernel compatibility** (especially for embedded / long-lived
 systems) while avoiding regressions when new kernels are added.
-
-> Replace `OWNER/REPO` in badges above with your real GitHub `username/repository`.
 
 ---
 
