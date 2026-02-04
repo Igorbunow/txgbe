@@ -751,6 +751,71 @@ prepare_modules() {
 
   # Prepare tree for external module builds.
   make -C "${src_dir}" O="${build_dir}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" -j"${JOBS}" modules_prepare
+
+  # 2. === CRITICAL FIX: Convert to Standalone Headers ===
+  #    The goal here is to make the build directory a fully standalone KERNELDIR.
+  #    By default, 'modules_prepare' leaves a 'source' symlink, and the Makefile
+  #    in the O= directory is a shim that points back to the source tree.
+  #    This means Kbuild (e.g., when building external modules) still depends
+  #    on the source tree.
+  #
+  #    To create a relocatable KERNELDIR, we:
+  #    a) Replace the shim Makefile with the real one from the source.
+  #    b) Copy essential source files/directories (scripts, include, arch/<arch>/include, tools)
+  #       into the build directory. We use 'cp -rn' to avoid overwriting files
+  #       that might have been generated during modules_prepare (e.g., fixdep, modpost binaries).
+  #    c) Remove the 'source' symlink, which otherwise tells Kbuild that this is
+  #       an out-of-tree build and makes it look in the source tree instead of locally.
+  
+  echo "    FIX: Making headers standalone (merging source+build for relocatability)..."
+
+  # Determine internal arch name for source directories (e.g. x86_64 -> x86)
+  local srcarch="${ARCH}"
+  case "${ARCH}" in
+    x86_64) srcarch="x86" ;;
+    arm64)  srcarch="arm64" ;; # arm64 is usually 'arm64' in arch/
+    arm)    srcarch="arm" ;;   # arm is usually 'arm' in arch/
+    riscv)  srcarch="riscv" ;; # riscv is usually 'riscv' in arch/
+  esac
+
+  # A. Replace the shim Makefile with the real one from the source tree.
+  #    The default O=/Makefile is a symlink or minimal stub.
+  rm -f "${build_dir}/Makefile"
+  cp "${src_dir}/Makefile" "${build_dir}/"
+
+  # B. Fill in missing source scripts (without overwriting compiled binaries like fixdep/modpost)
+  #    'cp -rn' does not overwrite existing files, only copies new ones.
+  echo "        Copying scripts..."
+  cp -rn "${src_dir}/scripts" "${build_dir}/"
+
+  # C. Fill in generic include headers
+  #    The build dir has include/generated and include/config. We need include/linux, etc.
+  echo "        Copying generic include headers..."
+  cp -rn "${src_dir}/include" "${build_dir}/"
+
+  # D. Fill in arch-specific headers and Makefiles
+  #    Ensures arch-specific Kbuild logic and headers are available locally.
+  echo "        Copying arch-specific headers and Makefiles for ${srcarch}..."
+  mkdir -p "${build_dir}/arch/${srcarch}"
+  # Include dir might not exist in some older kernels / arches, so ignore errors.
+  cp -rn "${src_dir}/arch/${srcarch}/include" "${build_dir}/arch/${srcarch}/" 2>/dev/null || true
+  # Copying Makefile (if present) is crucial for arch-specific Kbuild logic.
+  cp -rn "${src_dir}/arch/${srcarch}/Makefile" "${build_dir}/arch/${srcarch}/" 2>/dev/null || true
+
+  # E. Copy tools (often needed for objtool or validation, some Kbuild steps might need them)
+  echo "        Copying tools..."
+  cp -rn "${src_dir}/tools" "${build_dir}/" 2>/dev/null || true
+
+  # F. Remove the 'source' symlink.
+  #    If this exists, Kbuild thinks it is an out-of-tree build and ignores local files.
+  echo "        Removing 'source' symlink..."
+  rm -f "${build_dir}/source"
+  
+  # G. Ensure permissions are friendly for non-root users who might build external modules.
+  echo "        Setting friendly permissions..."
+  chmod -R a+rX "${build_dir}"
+  
+  echo "    FIX: Done. Build directory is now relocatable and read-only ready."
 }
 
 main() {
