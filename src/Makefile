@@ -23,7 +23,7 @@ TXGBE_SRCDIR := $(dir $(abspath $(TXGBE_MAKEFILE)))
 KCOMPAT_GENERATOR := $(TXGBE_SRCDIR)generated.sh
 # Add auto-generation for kcompat defs when building under kbuild,
 # otherwise rely on the kcompat-generated target defined near the end.
-ifneq ($(KERNELRELEASE),)
+ifneq ($(KBUILD_EXTMOD),)
 # kbuild part of makefile
 #
 # Makefile for the WangXun(R) 10GbE PCI Express Linux Network Driver
@@ -113,7 +113,8 @@ $(addprefix $(obj)/,$(txgbe-y)): $(obj)/$(KCOMPAT_GENERATED_FILE) $(obj)/$(KCOMP
 
 clean-files += $(KCOMPAT_GENERATED_FILE) $(KCOMPAT_STAMP_FILE)
 
-else	# ifneq($(KERNELRELEASE),)
+else	# ifneq($(KBUILD_EXTMOD),)
+
 # normal makefile
 
 DRIVER := txgbe

@@ -30,6 +30,7 @@ build_one="${SCRIPT_DIR}/build_one.sh"
 fail_count=0
 declare -a failed=()
 
+
 get_kernelrelease() {
   local kdir="$1"
   # Try to query kernelrelease; if it fails, fall back to basename.
@@ -39,6 +40,7 @@ get_kernelrelease() {
     basename "${kdir}"
   fi
 }
+
 
 echo "==> Matrix build start"
 echo "    KERNELDIRS: ${KERNELDIRS}"
@@ -89,7 +91,7 @@ done
 echo "==> Matrix build done"
 if [[ "${fail_count}" -ne 0 ]]; then
   echo "==> Failures: ${fail_count}"
-  for f in "${failed[ @]}"; do
+  for f in "${failed[@]}"; do
     echo "    ${f}"
   done
   exit 1
