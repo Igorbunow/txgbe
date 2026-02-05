@@ -243,6 +243,15 @@ export KERNELDIR=/path/to/kernel/tree
 make -C "$KERNELDIR" M="$PWD/src" modules -j"$(nproc)"
 ```
 
+Example (x86):
+
+```bash
+export ARCH=x86
+export CROSS_COMPILE=""
+export KERNELDIR=/path/to/kernel/tree
+make -C "$KERNELDIR" M="$PWD/src" modules -j"$(nproc)"
+```
+
 ---
 
 ### 7) When reporting an issue
