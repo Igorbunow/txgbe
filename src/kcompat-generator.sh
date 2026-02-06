@@ -152,6 +152,7 @@ function gen-netdevice() {
 	gen NEED_NET_PREFETCH if fun net_prefetch absent in "$ndh"
 	gen HAVE_NDO_FDB_ADD_EXTACK if fun ndo_fdb_add matches ext_ack in "$ndh"
 	gen HAVE_NDO_BRIDGE_SETLINK_EXTACK if fun ndo_bridge_setlink matches ext_ack in "$ndh"
+	gen HAVE_NDO_FDB_ADD_NOTIFY if method ndo_fdb_add of net_device_ops matches 'bool \\*' in "$ndh"
 }
 
 function gen-pci() {
@@ -210,6 +211,10 @@ function gen-other() {
 	gen HAVE_LMV1_SUPPORT if macro VFIO_REGION_TYPE_MIGRATION in include/uapi/linux/vfio.h
 	gen HAVE_LINKMODE if fun linkmode_set_bit in include/linux/linkmode.h
 	gen HAVE_NO_XDP_CONVERT if fun xdp_convert_buff_to_frame in include/net/xdp.h
+	gen NEED_FROM_TIMER if macro from_timer absent in include/linux/timer.h
+	gen NEED_DEL_TIMER_SYNC if fun del_timer_sync absent in include/linux/timer.h
+	gen HAVE_TIMER_DELETE_SYNC if fun timer_delete_sync in include/linux/timer.h
+	gen HAVE_CYCLECOUNTER_READ_CONST if method read of cyclecounter matches 'const struct cyclecounter \\*' in include/linux/timecounter.h
 }
 
 # all the generations, extracted from main() to keep normal code and various

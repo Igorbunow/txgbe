@@ -1705,6 +1705,37 @@ __printf(2, 3) int sysfs_emit(char *buf, const char *fmt, ...);
 #endif /* NEED_SYSFS_EMIT */
 
 /*
+ * NEED_FROM_TIMER
+ *
+ * from_timer() was removed in newer kernels in favor of timer_container_of().
+ * Provide a compat definition when absent.
+ */
+#ifdef NEED_FROM_TIMER
+#ifdef timer_container_of
+#define from_timer(var, callback_timer, timer_fieldname) \
+	timer_container_of(var, callback_timer, timer_fieldname)
+#else
+#define from_timer(var, callback_timer, timer_fieldname) \
+	container_of(callback_timer, typeof(*var), timer_fieldname)
+#endif
+#endif /* NEED_FROM_TIMER */
+
+/*
+ * NEED_DEL_TIMER_SYNC
+ *
+ * del_timer_sync() was replaced by timer_delete_sync() in newer kernels.
+ * Map the old name to the new API when del_timer_sync is absent.
+ */
+#if defined(NEED_DEL_TIMER_SYNC) && defined(HAVE_TIMER_DELETE_SYNC)
+struct timer_list;
+extern int timer_delete_sync(struct timer_list *timer);
+static inline int del_timer_sync(struct timer_list *timer)
+{
+	return timer_delete_sync(timer);
+}
+#endif /* NEED_DEL_TIMER_SYNC && HAVE_TIMER_DELETE_SYNC */
+
+/*
  * HAVE_U64_STATS_FETCH_BEGIN_IRQ
  * HAVE_U64_STATS_FETCH_RETRY_IRQ
  *

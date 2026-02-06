@@ -38,6 +38,7 @@
 #include <linux/ipv6.h>
 #include <linux/timekeeping.h>
 #include <linux/ktime.h>
+#include <linux/timer.h>
 #ifndef KTIME_ZERO
 #define KTIME_ZERO ((ktime_t)0)
 #endif
@@ -11365,6 +11366,9 @@ static int txgbe_ndo_fdb_add(struct ndmsg *ndm, struct nlattr *tb[],
 #endif
 #ifdef HAVE_NDO_FDB_ADD_EXTACK
 			     u16 flags,
+#ifdef HAVE_NDO_FDB_ADD_NOTIFY
+			     bool *notified,
+#endif
 			     struct netlink_ext_ack __always_unused *extack)
 #else
 			     u16 flags)
@@ -11381,6 +11385,11 @@ static int txgbe_ndo_fdb_add(struct ndmsg *ndm,
 		if (TXGBE_MAX_PF_MACVLANS <= netdev_uc_count(dev))
 			return -ENOMEM;
 	}
+
+#ifdef HAVE_NDO_FDB_ADD_NOTIFY
+	if (notified)
+		*notified = false;
+#endif
 
 #ifdef USE_CONST_DEV_UC_CHAR
 #ifdef HAVE_NDO_FDB_ADD_VID

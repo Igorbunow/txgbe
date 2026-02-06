@@ -89,7 +89,11 @@
  * cyclecounter structure used to construct a ns counter from the
  * arbitrary fixed point registers
  */
+#ifdef HAVE_CYCLECOUNTER_READ_CONST
 static u64 txgbe_ptp_read(const struct cyclecounter *hw_cc)
+#else
+static u64 txgbe_ptp_read(struct cyclecounter *hw_cc)
+#endif
 {
 	struct txgbe_adapter *adapter =
 		container_of(hw_cc, struct txgbe_adapter, hw_cc);
