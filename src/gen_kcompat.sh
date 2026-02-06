@@ -25,6 +25,12 @@ mod_obj="$6"
 gen_name="$7"
 out_path="$8"
 
+realpath_f() {
+  # Portable "realpath": prefer readlink -f, fallback to realpath.
+  local p="$1"
+  readlink -f "$p" 2>/dev/null || realpath "$p" 2>/dev/null || echo "$p"
+}
+
 objtree_real="$objtree"
 case "$objtree_real" in
   ""|"."|"./") objtree_real="$kbuild_pwd" ;;
@@ -42,10 +48,20 @@ echo "Generating ${gen_name} for ${krel} from SRCTREE=${srctree} OBJTREE=${objtr
 # If Kbuild uses separate obj dir, generator may have dropped the file into source dir.
 src_file="${mod_src}/${gen_name}"
 
-if [ "$mod_src" != "$mod_obj" ] && [ -f "$src_file" ]; then
-  # Copy+remove is safe even when paths end up equal (no 'mv: same file' issue).
-  cp -f "$src_file" "$out_path"
-  rm -f "$src_file"
+mod_src_real="$(realpath_f "$mod_src")"
+mod_obj_real="$(realpath_f "$mod_obj")"
+out_path_real="$(realpath_f "$out_path")"
+src_file_real="$(realpath_f "$src_file")"
+
+if [ "$mod_src_real" != "$mod_obj_real" ] && [ -f "$src_file" ]; then
+  if [ "$src_file_real" = "$out_path_real" ]; then
+    # Avoid "cp: same file" when paths differ only by "." or symlinks.
+    true
+  else
+    # Copy+remove when source and destination are distinct paths.
+    cp -f "$src_file" "$out_path"
+    rm -f "$src_file"
+  fi
 fi
 
 if [ ! -f "$out_path" ]; then
