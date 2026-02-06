@@ -2,7 +2,7 @@
 
 [![downloads](https://img.shields.io/github/downloads/Igorbunow/txgbe/total)](https://github.com/Igorbunow/txgbe/releases)
 [![license](https://img.shields.io/badge/License-GPLv2-blue.svg)](./LICENSE)
-[![kernel](https://img.shields.io/badge/kernel-4.19%20%E2%86%92%206.18-success)](#kernel-support)
+[![kernel](https://img.shields.io/badge/kernel-3.18%20%E2%86%92%206.18-success)](#kernel-support)
 [![ci](https://img.shields.io/github/actions/workflow/status/Igorbunow/txgbe/build.yml?branch=main)](https://github.com/Igorbunow/txgbe/actions)
 [![release](https://img.shields.io/github/v/release/Igorbunow/txgbe)](https://github.com/Igorbunow/txgbe/releases)
 
@@ -29,6 +29,11 @@ This fork focuses on:
 ## Kernel support
 
 Target kernels (must not regress):
+- **3.18**
+- **4.1**
+- **4.4**
+- **4.9**
+- **4.14**
 - **4.19**
 - **5.4**
 - **5.10**
