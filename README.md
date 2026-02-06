@@ -87,6 +87,98 @@ You need:
 
 ---
 
+## Kernel headers prep helper (multi-series)
+
+The script `tools/prepare_kernels_arm64.sh` downloads kernel tarballs and prepares headers (via `modules_prepare`) into
+`/opt/kernels/<version>/build-<ARCH>` by default. It also supports selecting arbitrary LTS series, using alternate
+kernel sources, and keeping compiler-specific build directories.
+
+Key behaviors:
+- Resolves latest patch versions per series (from `releases.json`, with CDN fallback when missing).
+- Supports alternative download base via `KERNEL_SOURCE_BASE` / `--kernel-source-base`.
+- Records compiler metadata in each build dir (`.toolchain-info`) to detect mismatches on subsequent runs.
+
+### Common usage
+
+Prepare the default supported series:
+
+```bash
+sudo tools/prepare_kernels_arm64.sh
+```
+
+Prepare only selected series:
+
+```bash
+sudo tools/prepare_kernels_arm64.sh --kernels-list "4.14 4.19 5.10"
+```
+
+Use the latest available patch level for each selected series:
+
+```bash
+sudo tools/prepare_kernels_arm64.sh --latest-all --kernels-list "4.4 4.9 4.14"
+```
+
+Use a local releases lock file:
+
+```bash
+sudo RELEASES_JSON=/etc/kernel-build/releases.json tools/prepare_kernels_arm64.sh
+```
+
+Dry-run (show plan only):
+
+```bash
+sudo tools/prepare_kernels_arm64.sh --dry-run --kernels-list "4.14 4.19"
+```
+
+Print the upstream LTS reference table:
+
+```bash
+tools/prepare_kernels_arm64.sh --lts-reference
+```
+
+### Compiler-aware rebuild policy
+
+If a build directory already exists, the script checks which compiler prepared it and compares with the currently
+selected compiler. The comparison is soft on major version and strict on full version. When it detects a mismatch,
+you can choose how to proceed:
+
+- Prompt (default): interactive choice to rebuild or keep.
+- `--mismatch-rebuild`: delete the build dir and rebuild non-interactively.
+- `--mismatch-skip`: keep the build dir and skip non-interactively.
+- `--quiet`: disable prompting; requires one of the non-interactive policies above.
+
+Examples:
+
+```bash
+sudo tools/prepare_kernels_arm64.sh --mismatch-rebuild
+sudo tools/prepare_kernels_arm64.sh --mismatch-skip
+sudo tools/prepare_kernels_arm64.sh --quiet --mismatch-rebuild
+```
+
+### Compiler-specific build directories
+
+When you need parallel trees for different toolchains, enable a compiler-specific subdirectory:
+
+```bash
+sudo tools/prepare_kernels_arm64.sh --toolchain-subdir
+```
+
+This changes the build layout to:
+
+```
+/opt/kernels/<version>/build-<ARCH>/<compiler-tag>/
+```
+
+### Alternate kernel source base
+
+Use a different CDN/root for tarballs:
+
+```bash
+sudo tools/prepare_kernels_arm64.sh --kernel-source-base https://cdn.kernel.org/pub/linux/kernel
+```
+
+---
+
 ## Build (native, same machine/kernel)
 
 Build against the currently running kernel (typical kbuild approach):

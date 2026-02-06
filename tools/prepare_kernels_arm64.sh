@@ -45,12 +45,13 @@ DRY_RUN="${DRY_RUN:-0}"
 USE_TOOLCHAIN_SUBDIR="${USE_TOOLCHAIN_SUBDIR:-0}"
 TOOLCHAIN_SUBDIR_TAG=""
 
+# Behavior when an existing build dir was prepared with a different compiler.
+# Values: ask (default), rebuild, skip
+MISMATCH_POLICY="${MISMATCH_POLICY:-ask}"
+QUIET_MODE="${QUIET_MODE:-0}"
+
 # Optional flag to print the upstream LTS reference table and exit.
 PRINT_LTS_REFERENCE="${PRINT_LTS_REFERENCE:-0}"
-
-# Optional behavior: place prepared headers under subdir named after the toolchain (must be explicitly enabled).
-USE_TOOLCHAIN_SUBDIR="${USE_TOOLCHAIN_SUBDIR:-0}"
-TOOLCHAIN_SUBDIR_TAG=""
 
 # Optional "latest" behavior (default OFF):
 #  - LATEST_ALL=1          : try to use latest available versions for ALL series
@@ -69,7 +70,7 @@ Usage: $0 [--arch <arch>] [--cross-compile <prefix>] [--releases-json /path/to/r
 
 Environment overrides:
   ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON, CONFIG_DIR, LATEST_ALL, LATEST_ON_BROKEN, DRY_RUN,
-  USE_TOOLCHAIN_SUBDIR,
+  USE_TOOLCHAIN_SUBDIR, MISMATCH_POLICY, QUIET_MODE,
   KERNEL_SOURCE_BASE, TARGET_KERNEL_SERIES
 
 If RELEASES_JSON is provided and points to an existing file, it will be used
@@ -104,6 +105,9 @@ Options:
   --dry-run               (default OFF) Print plan only; do not download, extract, or run make.
   --kernel-source-base <url>  Override the base URL for kernel tarballs (env var KERNEL_SOURCE_BASE is an alternative).
   --lts-reference          Print the full upstream LTS table and exit.
+  --mismatch-rebuild       On compiler mismatch, delete the existing build dir and rebuild (non-interactive).
+  --mismatch-skip          On compiler mismatch, keep the existing build dir and skip (non-interactive).
+  --quiet                  Do not prompt; requires an explicit mismatch policy.
   --toolchain-subdir        Place each prepared tree under a compiler-specific subdirectory (off by default).
   -h, --help              Show this help.
 
@@ -213,6 +217,18 @@ parse_args() {
         STRICT=1
         shift
         ;;
+      --mismatch-rebuild)
+        MISMATCH_POLICY="rebuild"
+        shift
+        ;;
+      --mismatch-skip)
+        MISMATCH_POLICY="skip"
+        shift
+        ;;
+      --quiet)
+        QUIET_MODE=1
+        shift
+        ;;
       --lts-reference)
         PRINT_LTS_REFERENCE=1
         shift
@@ -285,6 +301,18 @@ print_gcc_version_line() {
   # Print first line of gcc --version (compact for CI logs)
   local gcc_bin="$1"
   "${gcc_bin}" --version 2>/dev/null | head -n 1 || true
+}
+
+version_major() {
+  local v="$1"
+  v="${v%%[^0-9.]*}"
+  echo "${v%%.*}"
+}
+
+version_exact_match() {
+  local a="$1"
+  local b="$2"
+  [[ "${a}" == "${b}" ]]
 }
 
 expected_dumpmachine_substr() {
@@ -370,6 +398,176 @@ compute_toolchain_tag() {
   tag="${tag// /_}"
   tag="${tag//[^a-zA-Z0-9._-]/_}"
   TOOLCHAIN_SUBDIR_TAG="${tag}"
+}
+
+write_build_metadata() {
+  local build_dir="$1"
+  local gcc_bin="$2"
+  local ver_line
+  ver_line="$(print_gcc_version_line "${gcc_bin}")"
+  local dumpver
+  dumpver="$("${gcc_bin}" -dumpversion 2>/dev/null || true)"
+  local dumpmachine
+  dumpmachine="$("${gcc_bin}" -dumpmachine 2>/dev/null || true)"
+
+  mkdir -p "${build_dir}"
+  {
+    echo "TOOLCHAIN_GCC=${gcc_bin}"
+    [[ -n "${ver_line}" ]] && echo "TOOLCHAIN_GCC_VERSION=${ver_line}"
+    [[ -n "${dumpver}" ]] && echo "TOOLCHAIN_GCC_DUMPVERSION=${dumpver}"
+    [[ -n "${dumpmachine}" ]] && echo "TOOLCHAIN_GCC_DUMPMACHINE=${dumpmachine}"
+  } > "${build_dir}/.toolchain-info"
+}
+
+read_toolchain_metadata() {
+  local build_dir="$1"
+  local key="$2"
+  local file="${build_dir}/.toolchain-info"
+  [[ -f "${file}" ]] || return 1
+  grep -E "^${key}=" "${file}" | head -n 1 | sed -e "s/^${key}=//"
+}
+
+read_compiler_from_compile_h() {
+  local build_dir="$1"
+  local file="${build_dir}/include/generated/compile.h"
+  [[ -f "${file}" ]] || return 1
+  grep -E '^#define LINUX_COMPILER ' "${file}" | head -n 1 | sed -e 's/^#define LINUX_COMPILER "//' -e 's/"$//'
+}
+
+read_compiler_from_config() {
+  local build_dir="$1"
+  local file="${build_dir}/.config"
+  [[ -f "${file}" ]] || return 1
+
+  local gcc_version
+  gcc_version="$(grep -E '^CONFIG_GCC_VERSION=' "${file}" | head -n 1 | sed -e 's/^CONFIG_GCC_VERSION=//')"
+  local clang_version
+  clang_version="$(grep -E '^CONFIG_CLANG_VERSION=' "${file}" | head -n 1 | sed -e 's/^CONFIG_CLANG_VERSION=//')"
+
+  if [[ -n "${gcc_version}" && "${gcc_version}" != "0" ]]; then
+    echo "gcc ${gcc_version}"
+    return 0
+  fi
+  if [[ -n "${clang_version}" && "${clang_version}" != "0" ]]; then
+    echo "clang ${clang_version}"
+    return 0
+  fi
+  return 1
+}
+
+print_existing_toolchain_info() {
+  local build_dir="$1"
+  local existing_line
+  existing_line="$(read_toolchain_metadata "${build_dir}" "TOOLCHAIN_GCC_VERSION" || true)"
+  if [[ -n "${existing_line}" ]]; then
+    echo "EXISTING_TOOLCHAIN=${existing_line} (source=.toolchain-info)" >&2
+    return 0
+  fi
+  existing_line="$(read_compiler_from_compile_h "${build_dir}" || true)"
+  if [[ -n "${existing_line}" ]]; then
+    echo "EXISTING_TOOLCHAIN=${existing_line} (source=compile.h)" >&2
+    return 0
+  fi
+  existing_line="$(read_compiler_from_config "${build_dir}" || true)"
+  if [[ -n "${existing_line}" ]]; then
+    echo "EXISTING_TOOLCHAIN=${existing_line} (source=.config)" >&2
+    return 0
+  fi
+  local existing_dumpver
+  existing_dumpver="$(read_toolchain_metadata "${build_dir}" "TOOLCHAIN_GCC_DUMPVERSION" || true)"
+  if [[ -n "${existing_dumpver}" ]]; then
+    echo "EXISTING_TOOLCHAIN=${existing_dumpver} (source=.toolchain-info)" >&2
+    return 0
+  fi
+  echo "EXISTING_TOOLCHAIN=FAIL" >&2
+  return 1
+}
+
+print_toolchain_info_reason() {
+  local build_dir="$1"
+  local info_file="${build_dir}/.toolchain-info"
+  local compile_file="${build_dir}/include/generated/compile.h"
+  if [[ ! -f "${info_file}" ]]; then
+    echo "EXISTING_TOOLCHAIN_REASON=missing ${info_file}" >&2
+  fi
+  if [[ ! -f "${compile_file}" ]]; then
+    echo "EXISTING_TOOLCHAIN_REASON=missing ${compile_file}" >&2
+  fi
+}
+
+handle_toolchain_mismatch() {
+  local version="$1"
+  local build_dir="$2"
+  local gcc_bin="$3"
+  local current_dumpver
+  local current_major
+  local existing_dumpver
+  local existing_major
+
+  current_dumpver="$("${gcc_bin}" -dumpversion 2>/dev/null || true)"
+  existing_dumpver="$(read_toolchain_metadata "${build_dir}" "TOOLCHAIN_GCC_DUMPVERSION" || true)"
+
+  if [[ -z "${existing_dumpver}" ]]; then
+    if [[ "${MISMATCH_POLICY}" == "skip" ]]; then
+      echo "WARN: missing toolchain metadata in ${build_dir}/.toolchain-info" >&2
+      return 2
+    fi
+    echo "ERROR: missing toolchain metadata in ${build_dir}/.toolchain-info" >&2
+    return 3
+  fi
+
+  current_major="$(version_major "${current_dumpver}")"
+  existing_major="$(version_major "${existing_dumpver}")"
+
+  if [[ -n "${current_major}" && -n "${existing_major}" && "${current_major}" == "${existing_major}" ]]; then
+    return 0
+  fi
+
+  if version_exact_match "${current_dumpver}" "${existing_dumpver}"; then
+    return 0
+  fi
+
+  local existing_line
+  existing_line="$(read_toolchain_metadata "${build_dir}" "TOOLCHAIN_GCC_VERSION" || true)"
+  if [[ -z "${existing_line}" ]]; then
+    existing_line="${existing_dumpver}"
+  fi
+
+  local current_line
+  current_line="$(print_gcc_version_line "${gcc_bin}")"
+  if [[ -z "${current_line}" ]]; then
+    current_line="${current_dumpver}"
+  fi
+
+  echo "WARN: build directory was prepared with a different compiler" >&2
+  echo "      Existing: ${existing_line}" >&2
+  echo "      Current : ${current_line}" >&2
+
+  if [[ ${QUIET_MODE} -eq 1 && "${MISMATCH_POLICY}" == "ask" ]]; then
+    echo "ERROR: --quiet requires --mismatch-rebuild or --mismatch-skip" >&2
+    exit 1
+  fi
+
+  local decision="${MISMATCH_POLICY}"
+  if [[ "${decision}" == "ask" ]]; then
+    read -r -p "Delete and rebuild ${build_dir}? [y/N] " reply
+    case "${reply}" in
+      y|Y|yes|YES)
+        decision="rebuild"
+        ;;
+      *)
+        decision="skip"
+        ;;
+    esac
+  fi
+
+  if [[ "${decision}" == "rebuild" ]]; then
+    rm -rf "${build_dir}"
+    return 1
+  fi
+
+  echo "INFO: keeping existing build directory: ${build_dir}" >&2
+  return 2
 }
 
 build_dir_for_tree() {
@@ -938,6 +1136,23 @@ prepare_modules() {
   local src_dir="${kroot}/src/$(extract_src_dirname "${version}")"
   local build_dir
   build_dir="$(build_dir_for_tree "${kroot}")"
+  local gcc_bin
+  if [[ -n "${CROSS_COMPILE}" ]]; then
+    gcc_bin="${CROSS_COMPILE}gcc"
+  else
+    gcc_bin="gcc"
+  fi
+
+  if [[ -d "${build_dir}" ]]; then
+    print_existing_toolchain_info "${build_dir}" || true
+    handle_toolchain_mismatch "${version}" "${build_dir}" "${gcc_bin}" || {
+      case $? in
+        1) : ;;
+        2) return 0 ;;
+        *) return 1 ;;
+      esac
+    }
+  fi
 
   mkdir -p "${build_dir}"
   # If the tree was previously marked read-only, temporarily re-enable writes for preparation.
@@ -976,6 +1191,8 @@ prepare_modules() {
 
   # Prepare tree for external module builds.
   make -C "${src_dir}" O="${build_dir}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" -j"${JOBS}" modules_prepare
+
+  write_build_metadata "${build_dir}" "${gcc_bin}"
 
   # Headers-only hygiene:
   # If vmlinux or Module.symvers leak into the prepared tree, modpost may enable
@@ -1056,6 +1273,7 @@ main() {
   [[ -n "${CONFIG_DIR}" ]] && echo "CONFIG_DIR=${CONFIG_DIR}" >&2 || true
   echo "LATEST_ALL=${LATEST_ALL}  LATEST_ON_BROKEN=${LATEST_ON_BROKEN}  DRY_RUN=${DRY_RUN}  STRICT=${STRICT}" >&2
   echo "FORCE_DOWNLOAD=${FORCE_DOWNLOAD}  FORCE_EXTRACT=${FORCE_EXTRACT}  FORCE_PREPARE=${FORCE_PREPARE}" >&2
+  echo "MISMATCH_POLICY=${MISMATCH_POLICY}  QUIET_MODE=${QUIET_MODE}" >&2
   echo "======================" >&2
   echo >&2
 
@@ -1123,6 +1341,12 @@ main() {
     echo
     for s in "${SERIES_LIST[@]}"; do
       v="${series_to_version[${s}]}"
+      kroot="${BASE_DIR}/${v}"
+      build_dir="$(build_dir_for_tree "${kroot}")"
+      if [[ -d "${build_dir}" ]]; then
+        print_existing_toolchain_info "${build_dir}" || true
+        print_toolchain_info_reason "${build_dir}" || true
+      fi
       print_plan_for_kernel "${s}" "${v}"
     done
     exit 0
