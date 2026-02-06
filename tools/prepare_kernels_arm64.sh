@@ -719,6 +719,10 @@ prepare_modules() {
   local build_dir="${kroot}/build-${ARCH}"
 
   mkdir -p "${build_dir}"
+  # If the tree was previously marked read-only, temporarily re-enable writes for preparation.
+  # (We will switch it back to read-only at the end of preparation.)
+  chmod -R u+w "${build_dir}" "${src_dir}" 2>/dev/null || true
+
 
   # If user provided external configs, import them before any config generation.
   import_config_if_available "${version}" "${build_dir}"
@@ -752,70 +756,58 @@ prepare_modules() {
   # Prepare tree for external module builds.
   make -C "${src_dir}" O="${build_dir}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" -j"${JOBS}" modules_prepare
 
-  # 2. === CRITICAL FIX: Convert to Standalone Headers ===
-  #    The goal here is to make the build directory a fully standalone KERNELDIR.
-  #    By default, 'modules_prepare' leaves a 'source' symlink, and the Makefile
-  #    in the O= directory is a shim that points back to the source tree.
-  #    This means Kbuild (e.g., when building external modules) still depends
-  #    on the source tree.
+  # Headers-only hygiene:
+  # If vmlinux or Module.symvers leak into the prepared tree, modpost may enable
+  # unresolved-symbol checks and fail external module builds even though this is
+  # a headers-only environment. Debian headers typically avoid this.
   #
-  #    To create a relocatable KERNELDIR, we:
-  #    a) Replace the shim Makefile with the real one from the source.
-  #    b) Copy essential source files/directories (scripts, include, arch/<arch>/include, tools)
-  #       into the build directory. We use 'cp -rn' to avoid overwriting files
-  #       that might have been generated during modules_prepare (e.g., fixdep, modpost binaries).
-  #    c) Remove the 'source' symlink, which otherwise tells Kbuild that this is
-  #       an out-of-tree build and makes it look in the source tree instead of locally.
-  
-  echo "    FIX: Making headers standalone (merging source+build for relocatability)..."
+  # Remove these artifacts from BOTH build dir and source dir (source is reachable
+  # via 'build/source' symlink and may be consulted by Kbuild).
+  echo "    FIX: Removing full-build artifacts (vmlinux/System.map/Module.symvers) from headers-only trees..."
+  rm -f "${build_dir}/vmlinux" "${build_dir}/vmlinux.symvers" "${build_dir}/System.map" "${build_dir}/Module.symvers" \
+    "${src_dir}/vmlinux"  "${src_dir}/vmlinux.symvers"  "${src_dir}/System.map"  "${src_dir}/Module.symvers" \
+    2>/dev/null || true
 
-  # Determine internal arch name for source directories (e.g. x86_64 -> x86)
-  local srcarch="${ARCH}"
-  case "${ARCH}" in
-    x86_64) srcarch="x86" ;;
-    arm64)  srcarch="arm64" ;; # arm64 is usually 'arm64' in arch/
-    arm)    srcarch="arm" ;;   # arm is usually 'arm' in arch/
-    riscv)  srcarch="riscv" ;; # riscv is usually 'riscv' in arch/
-  esac
+  # Also remove any vmlinux.* variants at top-level if present
+  find "${build_dir}" "${src_dir}" -maxdepth 1 -type f -name 'vmlinux*' -delete 2>/dev/null || true
 
-  # A. Replace the shim Makefile with the real one from the source tree.
-  #    The default O=/Makefile is a symlink or minimal stub.
-  rm -f "${build_dir}/Makefile"
-  cp "${src_dir}/Makefile" "${build_dir}/"
+  # 2. === IMPORTANT: Keep out-of-tree layout (build dir + 'source' symlink) ===
+#    Rationale:
+#      - For older LTS kernels (e.g. 4.19) Kbuild may not export 'abs_objtree' into
+#        external modules. If we force an in-tree/standalone layout (srctree='.', objtree='.')
+#        then txgbe's kcompat generator can receive '.' instead of a real kernel path.
+#      - The Debian linux-headers packages use the same approach: arch-specific build
+#        directory + a 'source' link to the shared source tree.
+#
+#    Therefore we intentionally KEEP the 'source' symlink and do NOT replace the
+#    O=/Makefile shim with the real Makefile.
 
-  # B. Fill in missing source scripts (without overwriting compiled binaries like fixdep/modpost)
-  #    'cp -rn' does not overwrite existing files, only copies new ones.
-  echo "        Copying scripts..."
-  cp -rn "${src_dir}/scripts" "${build_dir}/"
+echo "    FIX: Ensuring out-of-tree headers layout (source symlink preserved)..."
 
-  # C. Fill in generic include headers
-  #    The build dir has include/generated and include/config. We need include/linux, etc.
-  echo "        Copying generic include headers..."
-  cp -rn "${src_dir}/include" "${build_dir}/"
+# Ensure the source link exists and points to the extracted source tree.
+# Use an absolute link so the tree is relocatable within BASE_DIR.
+ln -sfn "${src_dir}" "${build_dir}/source"
 
-  # D. Fill in arch-specific headers and Makefiles
-  #    Ensures arch-specific Kbuild logic and headers are available locally.
-  echo "        Copying arch-specific headers and Makefiles for ${srcarch}..."
-  mkdir -p "${build_dir}/arch/${srcarch}"
-  # Include dir might not exist in some older kernels / arches, so ignore errors.
-  cp -rn "${src_dir}/arch/${srcarch}/include" "${build_dir}/arch/${srcarch}/" 2>/dev/null || true
-  # Copying Makefile (if present) is crucial for arch-specific Kbuild logic.
-  cp -rn "${src_dir}/arch/${srcarch}/Makefile" "${build_dir}/arch/${srcarch}/" 2>/dev/null || true
-
-  # E. Copy tools (often needed for objtool or validation, some Kbuild steps might need them)
-  echo "        Copying tools..."
-  cp -rn "${src_dir}/tools" "${build_dir}/" 2>/dev/null || true
-
-  # F. Remove the 'source' symlink.
-  #    If this exists, Kbuild thinks it is an out-of-tree build and ignores local files.
-  echo "        Removing 'source' symlink..."
+# Some build systems drop an empty 'source' file (not a symlink). Ensure it's a symlink.
+if [[ ! -L "${build_dir}/source" ]]; then
   rm -f "${build_dir}/source"
-  
-  # G. Ensure permissions are friendly for non-root users who might build external modules.
-  echo "        Setting friendly permissions..."
-  chmod -R a+rX "${build_dir}"
-  
-  echo "    FIX: Done. Build directory is now relocatable and read-only ready."
+  ln -s "${src_dir}" "${build_dir}/source"
+fi
+
+# External module builds should never require writing into KERNELDIR. To make this robust:
+#   - ensure generated headers/config are present (modules_prepare already did that)
+#   - remove vmlinux if it exists, so modpost does not try unresolved symbol checks that
+#     depend on a full kernel build (Module.symvers/vmlinux).
+rm -f "${build_dir}/vmlinux" "${build_dir}/vmlinux.symvers" "${build_dir}/System.map" "${build_dir}/Module.symvers" 2>/dev/null || true
+
+# Make trees friendly for non-root users who only need read access for module builds.
+chmod -R a+rX "${build_dir}" "${src_dir}"
+
+# Optionally enforce read-only headers (good hygiene for build systems). Users can always
+# re-run this script with --force (as root) to refresh the prepared tree.
+chmod -R a-w "${build_dir}" "${src_dir}" || true
+
+echo "    FIX: Done. KERNELDIR is ready and read-only safe."
 }
 
 main() {

@@ -72,10 +72,22 @@ KCOMPAT_STAMP_FILE := .kcompat_kernelsrc
 #  - objtree: contains generated config headers (include/generated/autoconf.h)
 #            for the exact build/config we are compiling against.
 #
-# IMPORTANT: do NOT use KERNELDIR from the environment here. Always rely on
-# kbuild-provided trees to avoid cross-kernel contamination when switching.
-KCOMPAT_SRCTREE := $(if $(abs_srctree),$(abs_srctree),$(if $(srctree),$(srctree),$(objtree)))
-KCOMPAT_OBJTREE := $(if $(abs_objtree),$(abs_objtree),$(objtree))
+#  - a distro headers directory which contains "build" and/or "source" symlinks
+#
+# We prefer:
+#  - CONFFILE from the *build* directory (include/generated/autoconf.h)
+#  - KSRC from the *source* directory (must contain include/linux/kernel.h)
+#
+# On some kernels/headers layouts (notably when KERNELDIR is a build directory
+# with objtree/srctree reported as "."), passing raw values would make scripts
+# resolve relative paths against the module directory. Normalize to absolute.
+KCOMPAT_SRCTREE_RAW := $(if $(abs_srctree),$(abs_srctree),$(if $(srctree),$(srctree),$(objtree)))
+KCOMPAT_OBJTREE_RAW := $(if $(abs_objtree),$(abs_objtree),$(objtree))
+
+# abspath uses the current make working directory (the kernel build directory
+# when included via Kbuild), so "." becomes the absolute KERNELDIR.
+KCOMPAT_SRCTREE := $(abspath $(KCOMPAT_SRCTREE_RAW))
+KCOMPAT_OBJTREE := $(abspath $(KCOMPAT_OBJTREE_RAW))
 KCOMPAT_KERNEL_ROOT := $(if $(KCOMPAT_SRCTREE),$(KCOMPAT_SRCTREE),$(KCOMPAT_OBJTREE))
 KCOMPAT_SET_IRQ_AFFINITY := $(if $(KCOMPAT_KERNEL_ROOT),$(KCOMPAT_KERNEL_ROOT)/scripts/set_irq_affinity,scripts/set_irq_affinity)
 
