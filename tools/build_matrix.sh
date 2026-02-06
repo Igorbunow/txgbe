@@ -33,12 +33,22 @@ declare -a failed=()
 
 get_kernelrelease() {
   local kdir="$1"
-  # Try to query kernelrelease; if it fails, fall back to basename.
-  if make -s -C "${kdir}" kernelrelease >/dev/null 2>&1; then
-    make -s -C "${kdir}" kernelrelease
-  else
-    basename "${kdir}"
+  # Do NOT call 'make kernelrelease' here: it may attempt to create .tmp_* in kdir,
+  # which must be read-only in our build system.
+  #
+  # Prefer files produced by modules_prepare / headers packages.
+  if [[ -f "${kdir}/include/config/kernel.release" ]]; then
+    cat "${kdir}/include/config/kernel.release"
+    return 0
   fi
+  if [[ -f "${kdir}/include/generated/utsrelease.h" ]]; then
+    # Example: #define UTS_RELEASE "6.12.68"
+    sed -n 's/^[[:space:]]*#define[[:space:]]+UTS_RELEASE[[:space:]]+"(.*)".*/\1/p' \
+      "${kdir}/include/generated/utsrelease.h" | head -n1
+    return 0
+  fi
+  # Last resort: directory name
+  basename "${kdir}"
 }
 
 

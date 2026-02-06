@@ -1,3 +1,7 @@
+# NOTE: kcompat generation is delegated to src/gen_kcompat.sh to avoid fragile multi-line shell recipes.
+#
+# Makefile for the WangXun 10GbE PCI Express Linux driver
+#
 ################################################################################
 #
 # WangXun 10GbE PCI Express Linux Network Driver
@@ -62,6 +66,7 @@ txgbe-${CONFIG_SYSFS} += txgbe_sysfs.o
 txgbe-y += kcompat.o
 
 KCOMPAT_GENERATED_FILE := kcompat_generated_defs.h
+KCOMPAT_GEN_SCRIPT := $(src)/gen_kcompat.sh
 KCOMPAT_STAMP_FILE := .kcompat_kernelsrc
 
 # Kernel trees used for feature detection.
@@ -91,6 +96,16 @@ KCOMPAT_OBJTREE := $(abspath $(KCOMPAT_OBJTREE_RAW))
 KCOMPAT_KERNEL_ROOT := $(if $(KCOMPAT_SRCTREE),$(KCOMPAT_SRCTREE),$(KCOMPAT_OBJTREE))
 KCOMPAT_SET_IRQ_AFFINITY := $(if $(KCOMPAT_KERNEL_ROOT),$(KCOMPAT_KERNEL_ROOT)/scripts/set_irq_affinity,scripts/set_irq_affinity)
 
+# Normalize trees for kcompat generator:
+# - objtree may be "." in some layouts; in that case use kernel build PWD (CURDIR).
+# - always use absolute paths to avoid resolving relative paths against the module dir.
+KCOMPAT_SRCTREE_REAL := $(abspath $(KCOMPAT_KERNEL_ROOT))
+KCOMPAT_OBJTREE_REAL := $(KCOMPAT_OBJTREE)
+ifneq (,$(filter . ./,$(KCOMPAT_OBJTREE_REAL)))
+KCOMPAT_OBJTREE_REAL := $(CURDIR)
+endif
+KCOMPAT_OBJTREE_REAL := $(abspath $(KCOMPAT_OBJTREE_REAL))
+
 # Ensure kcompat_generated_defs.h is always generated for the current kernel and
 # that switching kernel build tree / KERNELRELEASE forces regeneration and rebuild.
 .PHONY: FORCE
@@ -100,25 +115,13 @@ $(obj)/$(KCOMPAT_STAMP_FILE): FORCE
 	@if [ -x "$(KCOMPAT_SET_IRQ_AFFINITY)" ]; then \
 		$(KCOMPAT_SET_IRQ_AFFINITY) -e; \
 	fi; \
-	srctree_real="$(KCOMPAT_KERNEL_ROOT)"; \
-	objtree_real="$(KCOMPAT_OBJTREE)"; \
-	new_id="$(KERNELRELEASE) $srctree_real $$objtree_real"; \
+	new_id="$(KERNELRELEASE) $(KCOMPAT_KERNEL_ROOT) $(KCOMPAT_OBJTREE)"; \
 	if [ ! -f "$@" ] || [ "$(cat "$@")" != "$new_id" ]; then \
 		echo "$new_id" > "$@"; \
 	fi
 
 $(obj)/$(KCOMPAT_GENERATED_FILE): $(src)/generated.sh $(obj)/$(KCOMPAT_STAMP_FILE)
-	@if [ -x "$(KCOMPAT_SET_IRQ_AFFINITY)" ]; then \
-		$(KCOMPAT_SET_IRQ_AFFINITY) -e; \
-	fi; \
-	srctree_real="$(KCOMPAT_KERNEL_ROOT)"; \
-	objtree_real="$(KCOMPAT_OBJTREE)"; \
-	echo "Generating $(KCOMPAT_GENERATED_FILE) for $(KERNELRELEASE) from SRCTREE=$$srctree_real OBJTREE=$$objtree_real"; \
-	cd "$(src)" && ./generated.sh "$$srctree_real" "$$objtree_real" >/dev/null; \
-	if [ "$(src)" != "$(obj)" ] && [ -f "$(src)/$(KCOMPAT_GENERATED_FILE)" ]; then \
-		mv -f "$(src)/$(KCOMPAT_GENERATED_FILE)" "$@"; \
-	fi; \
-	test -f "$@"
+	@$(KCOMPAT_GEN_SCRIPT) "$(KERNELRELEASE)" "$(KCOMPAT_KERNEL_ROOT)" "$(KCOMPAT_OBJTREE)" "$(CURDIR)" "$(src)" "$(obj)" "$(KCOMPAT_GENERATED_FILE)" "$@"
 
 # Make all driver objects depend on the generated header and kernel stamp.
 $(addprefix $(obj)/,$(txgbe-y)): $(obj)/$(KCOMPAT_GENERATED_FILE) $(obj)/$(KCOMPAT_STAMP_FILE)

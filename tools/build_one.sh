@@ -47,6 +47,13 @@ JOBS="${JOBS:-$(nproc)}"
 
 make_args=("-C" "${KERNELDIR}" "M=${MOD_DIR}")
 
+# Headers-only trees may not provide Module.symvers/vmlinux symbol info.
+# Newer kernels can treat unresolved symbols during modpost as fatal in this case.
+# If kernel's Module.symvers is missing, downgrade modpost errors to warnings.
+if [[ ! -f "${KERNELDIR}/Module.symvers" ]]; then
+  make_args+=("KBUILD_MODPOST_WARN=1")
+fi
+
 # Pass through common cross/clang knobs only if user set them.
 [[ -n "${ARCH-}" ]] && make_args+=("ARCH=${ARCH}")
 [[ -n "${CROSS_COMPILE-}" ]] && make_args+=("CROSS_COMPILE=${CROSS_COMPILE}")
