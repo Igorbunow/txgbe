@@ -41,6 +41,32 @@ Target kernels (must not regress):
 > Note: some distributions backport API changes into “older” kernel versions. For that reason, this project
 > prefers feature-detection (kcompat) over purely version-based logic.
 
+### Upstream LTS reference (what series to pick)
+
+| Branch | Release Date | EOL Date (upstream) |
+| ------ | ------------ | ------------------- |
+| 2.6.32 | 2009-12-03   | 2016-02-01          |
+| 3.0    | 2011-07-22   | 2016-10-01          |
+| 3.2    | 2012-01-04   | 2018-05-01          |
+| 3.4    | 2012-05-20   | 2016-09-01          |
+| 3.10   | 2013-06-30   | 2017-11-01          |
+| 3.12   | 2013-11-03   | 2016-04-01          |
+| 3.14   | 2014-03-30   | 2016-09-01          |
+| 3.16   | 2014-08-03   | 2017-03-01          |
+| 3.18   | 2014-12-07   | 2017-06-01          |
+| 4.1    | 2015-06-21   | 2017-09-01          |
+| 4.4    | 2016-01-10   | 2022-02-01          |
+| 4.9    | 2016-12-11   | 2023-01-07          |
+| 4.14   | 2017-11-12   | 2024-01-10          |
+| 4.19   | 2018-10-22   | 2024-12-05          |
+| 5.4    | 2019-11-25   | 2025-12-03          |
+| 5.10   | 2020-12-13   | 2026-12-31          |
+| 5.15   | 2021-10-31   | 2026-10-31          |
+| 6.1    | 2022-12-11   | 2027-12-31          |
+| 6.6    | 2023-10-30   | 2026-12-31          |
+| 6.12   | 2024-11-17   | 2026-12-31          |
+| 6.18   | 2025-11-30   | 2027-12-01          |
+
 ---
 
 ## Repository layout (high level)
@@ -291,4 +317,3 @@ PRs are welcome, especially for kernel-compat fixes. Please:
 ## License
 
 GPLv2 — see [`LICENSE`](./LICENSE) and [`COPYING`](./COPYING).
-

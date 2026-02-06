@@ -29,6 +29,11 @@ FORCE_EXTRACT=0
 FORCE_PREPARE=0
 STRICT=0
 
+DEFAULT_KERNEL_SOURCE_BASE="https://cdn.kernel.org/pub/linux/kernel"
+ENV_KERNEL_SOURCE_BASE="${KERNEL_SOURCE_BASE:-}"
+CLI_KERNEL_SOURCE_BASE=""
+KERNEL_SOURCE_BASE="${DEFAULT_KERNEL_SOURCE_BASE}"
+
 # Optional directory with per-kernel configs to import into O= build dir
 # Can be set via env CONFIG_DIR=... or CLI --config-dir ...
 CONFIG_DIR="${CONFIG_DIR:-}"
@@ -42,16 +47,18 @@ DRY_RUN="${DRY_RUN:-0}"
 LATEST_ALL="${LATEST_ALL:-0}"
 LATEST_ON_BROKEN="${LATEST_ON_BROKEN:-0}"
 
-CDN_BASE="https://cdn.kernel.org/pub/linux/kernel"
-
-SERIES_LIST=("4.19" "5.4" "5.10" "5.15" "6.1" "6.6" "6.12" "6.18")
+DEFAULT_SERIES_LIST=("4.19" "5.4" "5.10" "5.15" "6.1" "6.6" "6.12" "6.18")
+ENV_TARGET_KERNEL_SERIES="${TARGET_KERNEL_SERIES:-}"
+declare -a CLI_SERIES_LIST=()
+SERIES_LIST=("${DEFAULT_SERIES_LIST[@]}")
 
 usage() {
   cat <<EOF
 Usage: $0 [--arch <arch>] [--cross-compile <prefix>] [--releases-json /path/to/releases.json] [--config-dir /path] [--latest-all] [--latest-on-broken] [--dry-run] [--force] [--strict]
 
 Environment overrides:
-  ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON, CONFIG_DIR, LATEST_ALL, LATEST_ON_BROKEN, DRY_RUN
+  ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON, CONFIG_DIR, LATEST_ALL, LATEST_ON_BROKEN, DRY_RUN,
+  KERNEL_SOURCE_BASE, TARGET_KERNEL_SERIES
 
 If RELEASES_JSON is provided and points to an existing file, it will be used
 instead of fetching ${RELEASES_JSON_URL}.
@@ -69,6 +76,9 @@ Options:
                           Example:
                             --config-dir /opt/kernel-configs
                             /opt/kernel-configs/arm64/5.15/.config
+  --kernels-list <list>   Pick the kernel series that should be prepared (aliases: --target-series, --series).
+                          Supply a space/comma/semicolon delimited list; this is the same format
+                          accepted by the TARGET_KERNEL_SERIES environment variable.
   --force                 Re-download tarballs, re-extract sources and re-run modules_prepare.
   --force-download        Only re-download tarballs.
   --force-extract         Only re-extract sources.
@@ -80,8 +90,68 @@ Options:
   --latest-on-broken      (default OFF) Use pinned version by default; if tarball is missing/corrupted,
                           attempt to fall back to newest available version for that series (present on CDN).
   --dry-run               (default OFF) Print plan only; do not download, extract, or run make.
+  --kernel-source-base <url>  Override the base URL for kernel tarballs (env var KERNEL_SOURCE_BASE is an alternative).
   -h, --help              Show this help.
+
+Upstream LTS reference (what series to pick):
+  | Branch | Release Date | EOL Date (upstream) |
+  | ------ | ------------ | ------------------- |
+  | 2.6.32 | 2009-12-03   | 2016-02-01          |
+  | 3.0    | 2011-07-22   | 2016-10-01          |
+  | 3.2    | 2012-01-04   | 2018-05-01          |
+  | 3.4    | 2012-05-20   | 2016-09-01          |
+  | 3.10   | 2013-06-30   | 2017-11-01          |
+  | 3.12   | 2013-11-03   | 2016-04-01          |
+  | 3.14   | 2014-03-30   | 2016-09-01          |
+  | 3.16   | 2014-08-03   | 2017-03-01          |
+  | 3.18   | 2014-12-07   | 2017-06-01          |
+  | 4.1    | 2015-06-21   | 2017-09-01          |
+  | 4.4    | 2016-01-10   | 2022-02-01          |
+  | 4.9    | 2016-12-11   | 2023-01-07          |
+  | 4.14   | 2017-11-12   | 2024-01-10          |
+  | 4.19   | 2018-10-22   | 2024-12-05          |
+  | 5.4    | 2019-11-25   | 2025-12-03          |
+  | 5.10   | 2020-12-13   | 2026-12-31          |
+  | 5.15   | 2021-10-31   | 2026-10-31          |
+  | 6.1    | 2022-12-11   | 2027-12-31          |
+  | 6.6    | 2023-10-30   | 2026-12-31          |
+  | 6.12   | 2024-11-17   | 2026-12-31          |
+  | 6.18   | 2025-11-30   | 2027-12-01          |
 EOF
+}
+
+trim_string() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+split_series_string() {
+  local raw="$1"
+  local normalized="${raw//,/ }"
+  normalized="${normalized//;/ }"
+  normalized="${normalized//|/ }"
+  normalized="${normalized//:/ }"
+
+  local token
+  local trimmed
+  local -a tokens=()
+  read -ra tokens <<< "${normalized}"
+  for token in "${tokens[@]}"; do
+    trimmed="$(trim_string "${token}")"
+    if [[ -n "${trimmed}" ]]; then
+      printf '%s\n' "${trimmed}"
+    fi
+  done
+}
+
+append_series_tokens() {
+  local raw="$1"
+  local entry
+  while IFS= read -r entry; do
+    CLI_SERIES_LIST+=("${entry}")
+  done < <(split_series_string "${raw}")
 }
 
 parse_args() {
@@ -109,6 +179,13 @@ parse_args() {
         shift
         [[ $# -gt 0 ]] || { echo "ERROR: --config-dir requires a path" >&2; exit 1; }
         CONFIG_DIR="$1"
+        shift
+        ;;
+      --series|--target-series|--kernels-list)
+        local flag="$1"
+        shift
+        [[ $# -gt 0 ]] || { echo "ERROR: ${flag} requires a value" >&2; exit 1; }
+        append_series_tokens "$1"
         shift
         ;;
       --latest-all)
@@ -145,6 +222,12 @@ parse_args() {
         STRICT=1
         shift
         ;;
+      --kernel-source-base)
+        shift
+        [[ $# -gt 0 ]] || { echo "ERROR: --kernel-source-base requires a value" >&2; exit 1; }
+        CLI_KERNEL_SOURCE_BASE="$1"
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -156,6 +239,40 @@ parse_args() {
         ;;
     esac
   done
+}
+
+finalize_series_list() {
+  local resolved=()
+
+  if [[ -n "${ENV_TARGET_KERNEL_SERIES}" ]]; then
+    local entry
+    while IFS= read -r entry; do
+      resolved+=("${entry}")
+    done < <(split_series_string "${ENV_TARGET_KERNEL_SERIES}")
+  fi
+
+  if [[ ${#CLI_SERIES_LIST[@]} -gt 0 ]]; then
+    resolved=("${CLI_SERIES_LIST[@]}")
+  fi
+
+  if [[ ${#resolved[@]} -gt 0 ]]; then
+    SERIES_LIST=("${resolved[@]}")
+  fi
+}
+
+finalize_kernel_source_base() {
+  if [[ -n "${CLI_KERNEL_SOURCE_BASE}" ]]; then
+    KERNEL_SOURCE_BASE="${CLI_KERNEL_SOURCE_BASE}"
+  elif [[ -n "${ENV_KERNEL_SOURCE_BASE}" ]]; then
+    KERNEL_SOURCE_BASE="${ENV_KERNEL_SOURCE_BASE}"
+  else
+    KERNEL_SOURCE_BASE="${DEFAULT_KERNEL_SOURCE_BASE}"
+  fi
+
+  if [[ -z "${KERNEL_SOURCE_BASE}" ]]; then
+    echo "ERROR: kernel source base cannot be empty" >&2
+    exit 1
+  fi
 }
 
 need_cmd() {
@@ -316,10 +433,10 @@ is_prepared_markers_present() {
 tarball_url_for_version() {
   local version="$1"
   local vdir
-  vdir="$(major_dir_for_version "${version}")"
+  vdir="$(kernel_dir_for_version "${version}")"
   local tb
   tb="$(tarball_name_for_version "${version}")"
-  echo "${CDN_BASE}/${vdir}/${tb}"
+  echo "${KERNEL_SOURCE_BASE}/${vdir}/${tb}"
 }
 
 print_plan_for_kernel() {
@@ -385,37 +502,62 @@ resolve_latest_available_for_series() {
   # that is also present on CDN (HEAD OK). Echo version or empty if none found.
   local kernelorg_json="$1"
   local series="$2"
-
-  if [[ -z "${kernelorg_json}" || ! -f "${kernelorg_json}" ]]; then
-    echo ""
-    return 0
-  fi
+  local series_escaped="${series//./\\.}"
 
   local candidates
-  candidates="$(jq -r --arg s "${series}." '
-    .releases[]? | select(.version? and (.version | startswith($s))) | .version
-  ' "${kernelorg_json}" 2>/dev/null | sort -V)"
+  if [[ -n "${kernelorg_json}" && -f "${kernelorg_json}" ]]; then
+    candidates="$(jq -r --arg s "${series}." '
+      .releases[]? | select(.version? and (.version | startswith($s))) | .version
+    ' "${kernelorg_json}" 2>/dev/null | sort -V)"
 
-  if [[ -z "${candidates}" ]]; then
-    echo ""
-    return 0
+    if [[ -n "${candidates}" ]]; then
+      # reverse by sorting -V then tac
+      local v
+      while read -r v; do
+        if http_exists "$(tarball_url_for_version "${v}")"; then
+          echo "${v}"
+          return 0
+        fi
+      done < <(echo "${candidates}" | tac)
+    fi
   fi
 
-  # iterate from newest to oldest
-  local v
-  while read -r v; do
-    : # placeholder
-  done < /dev/null
+  local vdir
+  vdir="$(kernel_dir_for_series "${series}")"
+  local search_paths=("" "stable-review/" "incr/")
+  local pattern="linux-${series_escaped}\\.[0-9]+\\.tar\\.xz"
 
-  # reverse by sorting -V then tac
-  while read -r v; do
-    if http_exists "$(tarball_url_for_version "${v}")"; then
-      echo "${v}"
+  for suffix in "${search_paths[@]}"; do
+    local search_url="${KERNEL_SOURCE_BASE}/${vdir}/${suffix}"
+    local listing
+    listing="$(curl -fsSL "${search_url}" 2>/dev/null || true)"
+    if [[ -z "${listing}" ]]; then
+      continue
+    fi
+    local candidate
+    candidate="$(find_latest_from_listing "${listing}" "${pattern}")"
+    if [[ -n "${candidate}" ]]; then
+      echo "${candidate}"
       return 0
     fi
-  done < <(echo "${candidates}" | tac)
+  done
 
   echo ""
+}
+
+find_latest_from_listing() {
+  local listing="$1"
+  local pattern="$2"
+  local match
+  match="$(printf '%s' "${listing}" \
+    | { grep -oE "${pattern}" || true; } \
+    | sort -V \
+    | tail -n 1)"
+  if [[ -n "${match}" ]]; then
+    match="${match##linux-}"
+    match="${match%.tar.xz}"
+    printf '%s' "${match}"
+  fi
 }
 
 series_from_version() {
@@ -454,11 +596,35 @@ tarball_ensure_valid() {
   return 0
 }
 
-major_dir_for_version() {
+kernel_dir_for_version() {
   # Input: full version like 6.12.68 or 4.19.312
-  # Output: v6.x or v4.x
+  # Output: v6.x or v4.x, with exceptions for legacy series (v3.0, v2.6).
   local v="$1"
+  if [[ "${v}" == 3.0.* ]]; then
+    echo "v3.0"
+    return 0
+  fi
+  if [[ "${v}" == 2.6.* ]]; then
+    echo "v2.6"
+    return 0
+  fi
   local major="${v%%.*}"
+  echo "v${major}.x"
+}
+
+kernel_dir_for_series() {
+  # Input: series like 6.12, 4.4, 3.0, 2.6
+  # Output: v6.x, v4.x, v3.0, v2.6
+  local s="$1"
+  if [[ "${s}" == 3.0 || "${s}" == 3.0.* ]]; then
+    echo "v3.0"
+    return 0
+  fi
+  if [[ "${s}" == 2.6 || "${s}" == 2.6.* ]]; then
+    echo "v2.6"
+    return 0
+  fi
+  local major="${s%%.*}"
   echo "v${major}.x"
 }
 
@@ -521,8 +687,6 @@ download_tarball() {
   local version="$1"
   local dest_dir="$2"
 
-  local vdir
-  vdir="$(major_dir_for_version "${version}")"
   local tb
   tb="$(tarball_name_for_version "${version}")"
   local url
@@ -624,7 +788,7 @@ ensure_extracted_sources() {
   fi
 
   # Hard guard: ensure selected_version looks like a kernel version x.y.z
-  if [[ ! "${selected_version}" =~ ^[0-9]+.[0-9]+.[0-9]+$ ]]; then
+  if [[ ! "${selected_version}" =~ ^[0-9]+(\.[0-9]+){2,}$ ]]; then
     echo "ERROR: internal: selected_version is not a version string: '${selected_version}'" >&2
     return 1
   fi
@@ -812,6 +976,8 @@ echo "    FIX: Done. KERNELDIR is ready and read-only safe."
 
 main() {
   parse_args "$@"
+  finalize_kernel_source_base
+  finalize_series_list
 
   as_root_hint
 
@@ -821,6 +987,8 @@ main() {
   echo "CROSS_COMPILE=${CROSS_COMPILE}" >&2
   echo "BASE_DIR=${BASE_DIR}" >&2
   echo "JOBS=${JOBS}" >&2
+  echo "KERNEL_SOURCE_BASE=${KERNEL_SOURCE_BASE}" >&2
+  echo "SERIES_LIST=${SERIES_LIST[*]}" >&2
   [[ -n "${RELEASES_JSON}" ]] && echo "RELEASES_JSON=${RELEASES_JSON}" >&2 || true
   [[ -n "${CONFIG_DIR}" ]] && echo "CONFIG_DIR=${CONFIG_DIR}" >&2 || true
   echo "LATEST_ALL=${LATEST_ALL}  LATEST_ON_BROKEN=${LATEST_ON_BROKEN}  DRY_RUN=${DRY_RUN}  STRICT=${STRICT}" >&2
@@ -859,11 +1027,18 @@ main() {
   for s in "${SERIES_LIST[@]}"; do
     v="$(get_latest_version_for_series "${TMP_JSON}" "${s}")"
     if [[ -z "${v}" || "${v}" == "null" ]]; then
-      echo "ERROR: could not find any release for series ${s} in releases.json" >&2
-      exit 1
-    fi
-
-    if [[ ${LATEST_ALL} -eq 1 ]]; then
+      if [[ ${LATEST_ALL} -eq 1 ]]; then
+        echo "WARN: ${s} is not described in releases.json; trying to discover the latest available version anyway." >&2
+        v="$(resolve_latest_available_for_series "${KERNELORG_JSON}" "${s}")"
+        if [[ -z "${v}" ]]; then
+          echo "ERROR: no versions found for series ${s} even when searching ${KERNEL_SOURCE_BASE}" >&2
+          exit 1
+        fi
+      else
+        echo "ERROR: could not find any release for series ${s} in releases.json" >&2
+        exit 1
+      fi
+    elif [[ ${LATEST_ALL} -eq 1 ]]; then
       latest="$(resolve_latest_available_for_series "${KERNELORG_JSON}" "${s}")"
       if [[ -n "${latest}" && "${latest}" != "${v}" ]]; then
         echo "INFO: series ${s}: pinned ${v} -> latest ${latest}" >&2
@@ -925,4 +1100,3 @@ main() {
 }
 
 main "$@"
-
