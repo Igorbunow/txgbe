@@ -41,6 +41,17 @@ CONFIG_DIR="${CONFIG_DIR:-}"
 # Dry-run mode (default OFF): show plan, do not download/extract/prepare
 DRY_RUN="${DRY_RUN:-0}"
 
+# Optional behavior: place prepared headers under subdir named after the toolchain (must be explicitly enabled).
+USE_TOOLCHAIN_SUBDIR="${USE_TOOLCHAIN_SUBDIR:-0}"
+TOOLCHAIN_SUBDIR_TAG=""
+
+# Optional flag to print the upstream LTS reference table and exit.
+PRINT_LTS_REFERENCE="${PRINT_LTS_REFERENCE:-0}"
+
+# Optional behavior: place prepared headers under subdir named after the toolchain (must be explicitly enabled).
+USE_TOOLCHAIN_SUBDIR="${USE_TOOLCHAIN_SUBDIR:-0}"
+TOOLCHAIN_SUBDIR_TAG=""
+
 # Optional "latest" behavior (default OFF):
 #  - LATEST_ALL=1          : try to use latest available versions for ALL series
 #  - LATEST_ON_BROKEN=1    : try to use latest available only when the pinned one is broken/unavailable
@@ -58,6 +69,7 @@ Usage: $0 [--arch <arch>] [--cross-compile <prefix>] [--releases-json /path/to/r
 
 Environment overrides:
   ARCH, CROSS_COMPILE, BASE_DIR, JOBS, RELEASES_JSON, CONFIG_DIR, LATEST_ALL, LATEST_ON_BROKEN, DRY_RUN,
+  USE_TOOLCHAIN_SUBDIR,
   KERNEL_SOURCE_BASE, TARGET_KERNEL_SERIES
 
 If RELEASES_JSON is provided and points to an existing file, it will be used
@@ -91,32 +103,11 @@ Options:
                           attempt to fall back to newest available version for that series (present on CDN).
   --dry-run               (default OFF) Print plan only; do not download, extract, or run make.
   --kernel-source-base <url>  Override the base URL for kernel tarballs (env var KERNEL_SOURCE_BASE is an alternative).
+  --lts-reference          Print the full upstream LTS table and exit.
+  --toolchain-subdir        Place each prepared tree under a compiler-specific subdirectory (off by default).
   -h, --help              Show this help.
 
-Upstream LTS reference (what series to pick):
-  | Branch | Release Date | EOL Date (upstream) |
-  | ------ | ------------ | ------------------- |
-  | 2.6.32 | 2009-12-03   | 2016-02-01          |
-  | 3.0    | 2011-07-22   | 2016-10-01          |
-  | 3.2    | 2012-01-04   | 2018-05-01          |
-  | 3.4    | 2012-05-20   | 2016-09-01          |
-  | 3.10   | 2013-06-30   | 2017-11-01          |
-  | 3.12   | 2013-11-03   | 2016-04-01          |
-  | 3.14   | 2014-03-30   | 2016-09-01          |
-  | 3.16   | 2014-08-03   | 2017-03-01          |
-  | 3.18   | 2014-12-07   | 2017-06-01          |
-  | 4.1    | 2015-06-21   | 2017-09-01          |
-  | 4.4    | 2016-01-10   | 2022-02-01          |
-  | 4.9    | 2016-12-11   | 2023-01-07          |
-  | 4.14   | 2017-11-12   | 2024-01-10          |
-  | 4.19   | 2018-10-22   | 2024-12-05          |
-  | 5.4    | 2019-11-25   | 2025-12-03          |
-  | 5.10   | 2020-12-13   | 2026-12-31          |
-  | 5.15   | 2021-10-31   | 2026-10-31          |
-  | 6.1    | 2022-12-11   | 2027-12-31          |
-  | 6.6    | 2023-10-30   | 2026-12-31          |
-  | 6.12   | 2024-11-17   | 2026-12-31          |
-  | 6.18   | 2025-11-30   | 2027-12-01          |
+LTS branches by major release: 2.x (2.6.32); 3.x (3.0,3.2,3.4,3.10,3.12,3.14,3.16,3.18); 4.x (4.1,4.4,4.9,4.14,4.19); 5.x (5.4,5.10,5.15); 6.x (6.1,6.6,6.12,6.18)
 EOF
 }
 
@@ -220,6 +211,14 @@ parse_args() {
         ;;
       --strict)
         STRICT=1
+        shift
+        ;;
+      --lts-reference)
+        PRINT_LTS_REFERENCE=1
+        shift
+        ;;
+      --toolchain-subdir)
+        USE_TOOLCHAIN_SUBDIR=1
         shift
         ;;
       --kernel-source-base)
@@ -354,6 +353,33 @@ check_toolchain() {
 
   # Ensure toolchain matches selected ARCH (prevents x86 flags going to aarch64-gcc, etc.)
   check_toolchain_arch_match "${gcc_bin}"
+  compute_toolchain_tag "${gcc_bin}"
+}
+
+compute_toolchain_tag() {
+  local gcc_bin="$1"
+  local dumpver
+  dumpver="$("${gcc_bin}" -dumpversion 2>/dev/null || true)"
+  if [[ -z "${dumpver}" ]]; then
+    dumpver="$(print_gcc_version_line "${gcc_bin}" | awk '{print $NF}')"
+  fi
+  [[ -n "${dumpver}" ]] || dumpver="unknown"
+  local base
+  base="$(basename "${gcc_bin}")"
+  local tag="${base}-${dumpver}"
+  tag="${tag// /_}"
+  tag="${tag//[^a-zA-Z0-9._-]/_}"
+  TOOLCHAIN_SUBDIR_TAG="${tag}"
+}
+
+build_dir_for_tree() {
+  local kroot="$1"
+  local base="${kroot}/build-${ARCH}"
+  if [[ "${USE_TOOLCHAIN_SUBDIR}" -eq 1 && -n "${TOOLCHAIN_SUBDIR_TAG}" ]]; then
+    echo "${base}/${TOOLCHAIN_SUBDIR_TAG}"
+  else
+    echo "${base}"
+  fi
 }
 
 expected_arch_config_symbol() {
@@ -447,7 +473,8 @@ print_plan_for_kernel() {
   local kroot="${BASE_DIR}/${version}"
   local tb_dir="${kroot}/_dl"
   local src_root="${kroot}/src"
-  local build_dir="${kroot}/build-${ARCH}"
+  local build_dir
+  build_dir="$(build_dir_for_tree "${kroot}")"
   local tb_name
   tb_name="$(tarball_name_for_version "${version}")"
   local tb_path="${tb_dir}/${tb_name}"
@@ -495,6 +522,35 @@ print_plan_for_kernel() {
 
   echo "    WOULD DO : ${action_download}, ${action_extract}, ${action_prepare}"
   echo
+}
+
+print_lts_reference() {
+  cat <<'EOF'
+Upstream LTS reference (what series to pick):
+  | Branch | Release Date | EOL Date (upstream) |
+  | ------ | ------------ | ------------------- |
+  | 2.6.32 | 2009-12-03   | 2016-02-01          |
+  | 3.0    | 2011-07-22   | 2016-10-01          |
+  | 3.2    | 2012-01-04   | 2018-05-01          |
+  | 3.4    | 2012-05-20   | 2016-09-01          |
+  | 3.10   | 2013-06-30   | 2017-11-01          |
+  | 3.12   | 2013-11-03   | 2016-04-01          |
+  | 3.14   | 2014-03-30   | 2016-09-01          |
+  | 3.16   | 2014-08-03   | 2017-03-01          |
+  | 3.18   | 2014-12-07   | 2017-06-01          |
+  | 4.1    | 2015-06-21   | 2017-09-01          |
+  | 4.4    | 2016-01-10   | 2022-02-01          |
+  | 4.9    | 2016-12-11   | 2023-01-07          |
+  | 4.14   | 2017-11-12   | 2024-01-10          |
+  | 4.19   | 2018-10-22   | 2024-12-05          |
+  | 5.4    | 2019-11-25   | 2025-12-03          |
+  | 5.10   | 2020-12-13   | 2026-12-31          |
+  | 5.15   | 2021-10-31   | 2026-10-31          |
+  | 6.1    | 2022-12-11   | 2027-12-31          |
+  | 6.6    | 2023-10-30   | 2026-12-31          |
+  | 6.12   | 2024-11-17   | 2026-12-31          |
+  | 6.18   | 2025-11-30   | 2027-12-01          |
+EOF
 }
 
 resolve_latest_available_for_series() {
@@ -880,7 +936,8 @@ prepare_modules() {
   local kroot="$2"
 
   local src_dir="${kroot}/src/$(extract_src_dirname "${version}")"
-  local build_dir="${kroot}/build-${ARCH}"
+  local build_dir
+  build_dir="$(build_dir_for_tree "${kroot}")"
 
   mkdir -p "${build_dir}"
   # If the tree was previously marked read-only, temporarily re-enable writes for preparation.
@@ -976,6 +1033,10 @@ echo "    FIX: Done. KERNELDIR is ready and read-only safe."
 
 main() {
   parse_args "$@"
+  if [[ ${PRINT_LTS_REFERENCE} -eq 1 ]]; then
+    print_lts_reference
+    exit 0
+  fi
   finalize_kernel_source_base
   finalize_series_list
 
@@ -989,6 +1050,8 @@ main() {
   echo "JOBS=${JOBS}" >&2
   echo "KERNEL_SOURCE_BASE=${KERNEL_SOURCE_BASE}" >&2
   echo "SERIES_LIST=${SERIES_LIST[*]}" >&2
+  echo "USE_TOOLCHAIN_SUBDIR=${USE_TOOLCHAIN_SUBDIR}" >&2
+  [[ -n "${TOOLCHAIN_SUBDIR_TAG}" ]] && echo "TOOLCHAIN_SUBDIR_TAG=${TOOLCHAIN_SUBDIR_TAG}" >&2
   [[ -n "${RELEASES_JSON}" ]] && echo "RELEASES_JSON=${RELEASES_JSON}" >&2 || true
   [[ -n "${CONFIG_DIR}" ]] && echo "CONFIG_DIR=${CONFIG_DIR}" >&2 || true
   echo "LATEST_ALL=${LATEST_ALL}  LATEST_ON_BROKEN=${LATEST_ON_BROKEN}  DRY_RUN=${DRY_RUN}  STRICT=${STRICT}" >&2
@@ -1095,7 +1158,11 @@ main() {
   echo "Example build (external module):"
   echo "  export ARCH=${ARCH}"
   echo "  export CROSS_COMPILE=${CROSS_COMPILE}"
-  echo "  export KERNELDIR=${BASE_DIR}/<version>/build-${ARCH}"
+  local example_build_dir="${BASE_DIR}/<version>/build-${ARCH}"
+  if [[ ${USE_TOOLCHAIN_SUBDIR} -eq 1 && -n "${TOOLCHAIN_SUBDIR_TAG}" ]]; then
+    example_build_dir="${example_build_dir}/${TOOLCHAIN_SUBDIR_TAG}"
+  fi
+  echo "  export KERNELDIR=${example_build_dir}"
   echo "  make -C \"\$KERNELDIR\" M=/path/to/module modules -j\"${JOBS}\""
 }
 
