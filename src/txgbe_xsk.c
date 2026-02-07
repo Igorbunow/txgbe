@@ -1106,6 +1106,7 @@ static void txgbe_clean_xdp_tx_buffer(struct txgbe_ring *tx_ring,
 bool txgbe_clean_xdp_tx_irq(struct txgbe_q_vector *q_vector,
 			    struct txgbe_ring *tx_ring)
 {
+	struct txgbe_adapter *adapter = netdev_priv(tx_ring->netdev);
 	u32 next_rs_idx = tx_ring->next_rs_idx;
 	union txgbe_tx_desc *next_rs_desc;
 	u32 ntc = tx_ring->next_to_clean;
@@ -1113,6 +1114,11 @@ bool txgbe_clean_xdp_tx_irq(struct txgbe_q_vector *q_vector,
 	u16 frames_ready = 0;
 	u32 xsk_frames = 0;
 	u16 i;
+
+	if (unlikely(test_bit(__TXGBE_DOWN, &adapter->state) ||
+		     test_bit(__TXGBE_RESETTING, &adapter->state) ||
+		     test_bit(__TXGBE_REMOVING, &adapter->state)))
+		return true;
 
 	next_rs_desc = TXGBE_TX_DESC(tx_ring, next_rs_idx);
 	if (next_rs_desc->wb.status &
@@ -1165,7 +1171,9 @@ int txgbe_xsk_async_xmit(struct net_device *dev, u32 qid)
 	struct txgbe_adapter *adapter = netdev_priv(dev);
 	struct txgbe_ring *ring;
 	
-	if (test_bit(__TXGBE_DOWN, &adapter->state))
+	if (test_bit(__TXGBE_DOWN, &adapter->state) ||
+	    test_bit(__TXGBE_RESETTING, &adapter->state) ||
+	    test_bit(__TXGBE_REMOVING, &adapter->state))
 		return -ENETDOWN;
 	if (!READ_ONCE(adapter->xdp_prog))
 		return -ENXIO;

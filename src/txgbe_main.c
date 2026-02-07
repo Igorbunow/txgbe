@@ -579,7 +579,9 @@ static void txgbe_tx_timeout_dorecovery(struct txgbe_adapter *adapter)
  **/
 static void txgbe_tx_timeout_reset(struct txgbe_adapter *adapter)
 {
-	if (!test_bit(__TXGBE_DOWN, &adapter->state)) {
+	if (!test_bit(__TXGBE_DOWN, &adapter->state) &&
+	    !test_bit(__TXGBE_RESETTING, &adapter->state) &&
+	    !test_bit(__TXGBE_REMOVING, &adapter->state)) {
 		adapter->flags2 |= TXGBE_FLAG2_PF_RESET_REQUESTED;
 		e_warn(drv, "initiating reset due to tx timeout\n");
 		txgbe_service_event_schedule(adapter);
@@ -683,7 +685,9 @@ static bool txgbe_clean_tx_irq(struct txgbe_q_vector *q_vector,
 	unsigned int i = tx_ring->next_to_clean;
 	u16 vid = 0;
 
-	if (test_bit(__TXGBE_DOWN, &adapter->state))
+	if (test_bit(__TXGBE_DOWN, &adapter->state) ||
+	    test_bit(__TXGBE_RESETTING, &adapter->state) ||
+	    test_bit(__TXGBE_REMOVING, &adapter->state))
 		return true;
 
 	tx_buffer = &tx_ring->tx_buffer_info[i];
@@ -857,14 +861,18 @@ static bool txgbe_clean_tx_irq(struct txgbe_q_vector *q_vector,
 #ifdef HAVE_TX_MQ
 		if (__netif_subqueue_stopped(tx_ring->netdev,
 		    tx_ring->queue_index)
-		    && !test_bit(__TXGBE_DOWN, &adapter->state)) {
+		    && !test_bit(__TXGBE_DOWN, &adapter->state) &&
+		    !test_bit(__TXGBE_RESETTING, &adapter->state) &&
+		    !test_bit(__TXGBE_REMOVING, &adapter->state)) {
 			netif_wake_subqueue(tx_ring->netdev,
 					    tx_ring->queue_index);
 			++tx_ring->tx_stats.restart_queue;
 		}
 #else
 		if (netif_queue_stopped(tx_ring->netdev) &&
-		    !test_bit(__TXGBE_DOWN, &adapter->state)) {
+		    !test_bit(__TXGBE_DOWN, &adapter->state) &&
+		    !test_bit(__TXGBE_RESETTING, &adapter->state) &&
+		    !test_bit(__TXGBE_REMOVING, &adapter->state)) {
 			netif_wake_queue(tx_ring->netdev);
 			++tx_ring->tx_stats.restart_queue;
 		}
@@ -3426,7 +3434,9 @@ static irqreturn_t txgbe_msix_other(int __always_unused irq, void *data)
 #endif
 
 	/* re-enable the original interrupt state, no lsc, no queues */
-	if (!test_bit(__TXGBE_DOWN, &adapter->state))
+	if (!test_bit(__TXGBE_DOWN, &adapter->state) &&
+	    !test_bit(__TXGBE_RESETTING, &adapter->state) &&
+	    !test_bit(__TXGBE_REMOVING, &adapter->state))
 		txgbe_irq_enable(adapter, false, false);
 
 	return IRQ_HANDLED;
@@ -3458,6 +3468,7 @@ int txgbe_poll(struct napi_struct *napi, int budget)
 	struct txgbe_adapter *adapter = q_vector->adapter;
 	struct txgbe_ring *ring;
 	int per_ring_budget;
+	int work_done = 0;
 	bool clean_complete = true;
 
 #if IS_ENABLED(CONFIG_TPH)
@@ -3507,6 +3518,7 @@ int txgbe_poll(struct napi_struct *napi, int budget)
 						 per_ring_budget);
 #endif /* HAVE_AF_XDP_ZC_SUPPORT */
 
+		work_done += cleaned;
 		if (cleaned >= per_ring_budget)
 			clean_complete = false;
 	}
@@ -3524,12 +3536,15 @@ int txgbe_poll(struct napi_struct *napi, int budget)
 		return budget;
 
 	/* all work done, exit the polling mode */
-	napi_complete(napi);
-	if (adapter->rx_itr_setting == 1)
-		txgbe_set_itr(q_vector);
-	if (!test_bit(__TXGBE_DOWN, &adapter->state))
-		txgbe_intr_enable(&adapter->hw,
-			TXGBE_INTR_Q(q_vector->v_idx));
+	if (napi_complete_done(napi, work_done)) {
+		if (adapter->rx_itr_setting == 1)
+			txgbe_set_itr(q_vector);
+		if (!test_bit(__TXGBE_DOWN, &adapter->state) &&
+		    !test_bit(__TXGBE_RESETTING, &adapter->state) &&
+		    !test_bit(__TXGBE_REMOVING, &adapter->state))
+			txgbe_intr_enable(&adapter->hw,
+				TXGBE_INTR_Q(q_vector->v_idx));
+	}
 
 	return 0;
 }
@@ -3685,7 +3700,9 @@ static irqreturn_t txgbe_intr(int __always_unused irq, void *data)
 	 * re-enable link(maybe) and non-queue interrupts, no flush.
 	 * txgbe_poll will re-enable the queue interrupts
 	 */
-	if (!test_bit(__TXGBE_DOWN, &adapter->state))
+	if (!test_bit(__TXGBE_DOWN, &adapter->state) &&
+	    !test_bit(__TXGBE_RESETTING, &adapter->state) &&
+	    !test_bit(__TXGBE_REMOVING, &adapter->state))
 		txgbe_irq_enable(adapter, false, false);
 
 	return IRQ_HANDLED;
@@ -9714,6 +9731,7 @@ static void txgbe_tx_olinfo_status(union txgbe_tx_desc *tx_desc,
 
 static int __txgbe_maybe_stop_tx(struct txgbe_ring *tx_ring, u16 size)
 {
+	struct txgbe_adapter *adapter = netdev_priv(tx_ring->netdev);
 	netif_stop_subqueue(tx_ring->netdev, tx_ring->queue_index);
 
 	/* Herbert's original patch had:
@@ -9726,6 +9744,12 @@ static int __txgbe_maybe_stop_tx(struct txgbe_ring *tx_ring, u16 size)
 	 * made room available.
 	 */
 	if (likely(txgbe_desc_unused(tx_ring) < size))
+		return -EBUSY;
+
+	/* Do not restart subqueues while the device is shutting down/resetting */
+	if (unlikely(test_bit(__TXGBE_DOWN, &adapter->state) ||
+		     test_bit(__TXGBE_RESETTING, &adapter->state) ||
+		     test_bit(__TXGBE_REMOVING, &adapter->state)))
 		return -EBUSY;
 
 	/* A reprieve! - use start_queue because it doesn't call schedule */
@@ -10582,6 +10606,17 @@ static netdev_tx_t txgbe_xmit_frame(struct sk_buff *skb,
 	unsigned int r_idx = skb->queue_mapping;
 #endif
 
+	/*
+	 * During close/reset/remove there can be short windows where xmit
+	 * gets invoked while rings/IRQs are being torn down. Drop early to
+	 * avoid touching rings in transitional states.
+	 */
+	if (unlikely(test_bit(__TXGBE_DOWN, &adapter->state) ||
+		     test_bit(__TXGBE_RESETTING, &adapter->state) ||
+		     test_bit(__TXGBE_REMOVING, &adapter->state))) {
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
 	if (!netif_carrier_ok(netdev)) {
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
