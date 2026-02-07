@@ -2139,6 +2139,8 @@ static struct sk_buff *txgbe_fetch_rx_buffer(struct txgbe_ring *rx_ring,
 	prefetchw(page);
 
 	skb = rx_buffer->skb;
+	if (!rx_ring->xdp_prog)
+		rx_buffer->pagecnt_bias--;
 
 	if (likely(!skb)) {
 		void *page_addr = page_address(page) +
@@ -2188,8 +2190,6 @@ dma_sync:
 					      DMA_FROM_DEVICE);
 		rx_buffer->skb = NULL;
 	}
-	if(!rx_ring->xdp_prog)
-		rx_buffer->pagecnt_bias--;
 
 	/* pull page into skb */
 	if (txgbe_add_rx_frag(rx_ring, rx_buffer, rx_desc, skb)) {
@@ -2614,16 +2614,38 @@ static int txgbe_clean_rx_irq(struct txgbe_q_vector *q_vector,
 		if (!txgbe_test_staterr(rx_desc, TXGBE_RXD_STAT_DD))
 			break;
 
-		size = le16_to_cpu(rx_desc->wb.upper.length);
-		if (!size) {
-			break;
-		}
 		/* This memory barrier is needed to keep us from reading
 		 * any other fields out of the rx_desc until we know the
 		 * descriptor has been written back
 		 */
 		dma_rmb();
 
+		size = le16_to_cpu(rx_desc->wb.upper.length);
+		if (unlikely(!size)) {
+			/* Avoid a stuck ring on bogus/empty descriptors. */
+			if (rx_buffer->dma) {
+				dma_unmap_single(rx_ring->dev, rx_buffer->dma,
+						 rx_ring->rx_buf_len,
+						 DMA_FROM_DEVICE);
+				rx_buffer->dma = 0;
+			}
+			if (rx_buffer->skb) {
+				dev_kfree_skb_any(rx_buffer->skb);
+				rx_buffer->skb = NULL;
+			}
+
+			rx_buffer->pagecnt_bias--;
+			txgbe_put_rx_buffer(rx_ring, rx_buffer, ERR_PTR(-EINVAL));
+			cleaned_count++;
+
+			rx_ring->next_to_clean++;
+			if (rx_ring->next_to_clean == rx_ring->count)
+				rx_ring->next_to_clean = 0;
+
+			prefetch(TXGBE_RX_DESC(rx_ring, rx_ring->next_to_clean));
+			total_rx_packets++;
+			continue;
+		}
 		if (adapter->xdp_prog) {
 			prefetchw(rx_buffer->page);
 			rx_buffer->pagecnt_bias--;
@@ -10356,7 +10378,7 @@ netdev_tx_t txgbe_xmit_frame_ring(struct sk_buff *skb,
 	/* work around hw errata 3 */
 	u16 _llcLen, *llcLen;
 	llcLen = skb_header_pointer(skb, ETH_HLEN - 2, sizeof(u16), &_llcLen);
-	if (*llcLen == 0x3 || *llcLen == 0x4 || *llcLen == 0x5) {
+	if (llcLen && (*llcLen == 0x3 || *llcLen == 0x4 || *llcLen == 0x5)) {
 		if (txgbe_skb_pad_nonzero(skb, ETH_ZLEN - skb->len))
 			return -ENOMEM;
 		__skb_put(skb, ETH_ZLEN - skb->len);
