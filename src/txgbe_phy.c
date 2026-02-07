@@ -24,6 +24,22 @@
 #include "txgbe_phy.h"
 #include "txgbe_mtd.h"
 
+#include <linux/moduleparam.h>
+
+/*
+ * Optional workaround for some 10G copper SFP modules: when accessing the
+ * internal PHY via the MCU/MDIO bridge over I2C, the low byte of a 16-bit read
+ * may be returned as a duplicate of the high byte.
+ *
+ * Default: disabled (legacy behavior). Enable for debugging via:
+ *   insmod txgbe.ko sfp_i2c_fix=1
+ */
+static bool txgbe_sfp_i2c_fix;
+module_param_named(sfp_i2c_fix, txgbe_sfp_i2c_fix, bool, 0644);
+MODULE_PARM_DESC(sfp_i2c_fix,
+		"Enable workaround for some 10G copper SFP modules internal PHY I2C reads (default: 0)");
+
+
 /**
  * txgbe_check_reset_blocked - check status of MNG FW veto bit
  * @hw: pointer to the hardware structure
@@ -943,6 +959,78 @@ out:
 	return status;
 }
 
+
+STATIC void txgbe_i2c_drain_rx_fifo(struct txgbe_hw *hw)
+{
+	/* Drain any stale data to keep RX FIFO level/interrupt state consistent. */
+	while (rd32(hw, TXGBE_I2C_RXFLR))
+		(void)rd32(hw, TXGBE_I2C_DATA_CMD);
+	(void)rd32(hw, TXGBE_I2C_CLR_INTR);
+}
+
+STATIC s32 txgbe_read_i2c_sfp_phy_byte_10g_cu(struct txgbe_hw *hw, u16 byte_offset, u8 *val)
+{
+	s32 status = 0;
+
+	txgbe_i2c_drain_rx_fifo(hw);
+
+	/* wait tx empty */
+	status = po32m(hw, TXGBE_I2C_RAW_INTR_STAT,
+					TXGBE_I2C_INTR_STAT_TX_EMPTY, TXGBE_I2C_INTR_STAT_TX_EMPTY,
+					TXGBE_I2C_TIMEOUT, 10);
+	if (status != 0)
+		return status;
+
+	/* write reg_offset */
+	wr32(hw, TXGBE_I2C_DATA_CMD, 0x23);
+	wr32(hw, TXGBE_I2C_DATA_CMD, byte_offset >> 8);
+	wr32(hw, TXGBE_I2C_DATA_CMD, (u8)byte_offset | TXGBE_I2C_DATA_CMD_STOP);
+
+	/* wait tx empty */
+	status = po32m(hw, TXGBE_I2C_RAW_INTR_STAT,
+					TXGBE_I2C_INTR_STAT_TX_EMPTY, TXGBE_I2C_INTR_STAT_TX_EMPTY,
+					TXGBE_I2C_TIMEOUT, 10);
+	if (status != 0)
+		return status;
+
+	/* delay for mcu access sfp internal phy through MDIO (>= 1ms) */
+	mdelay(5);
+
+	/* read one byte */
+	wr32(hw, TXGBE_I2C_DATA_CMD, TXGBE_I2C_DATA_CMD_READ | TXGBE_I2C_DATA_CMD_STOP);
+
+	/* wait for read complete */
+	status = po32m(hw, TXGBE_I2C_RAW_INTR_STAT,
+					TXGBE_I2C_INTR_STAT_RX_FULL, TXGBE_I2C_INTR_STAT_RX_FULL,
+					TXGBE_I2C_TIMEOUT, 100);
+	if (status != 0)
+		return status;
+
+	*val = 0xFF & rd32(hw, TXGBE_I2C_DATA_CMD);
+	return 0;
+}
+
+STATIC s32 txgbe_read_i2c_sfp_phy_word_10g_cu_fix(struct txgbe_hw *hw, u16 byte_offset, u16 *data)
+{
+	s32 status = 0;
+	u8 hi = 0, lo = 0;
+	u32 rx_tl = rd32(hw, TXGBE_I2C_RX_TL);
+
+	/* Ensure RX_FULL asserts after a single received byte. */
+	wr32(hw, TXGBE_I2C_RX_TL, 0);
+
+	status = txgbe_read_i2c_sfp_phy_byte_10g_cu(hw, byte_offset, &hi);
+	if (status == 0)
+		status = txgbe_read_i2c_sfp_phy_byte_10g_cu(hw, (u16)(byte_offset + 1), &lo);
+
+	wr32(hw, TXGBE_I2C_RX_TL, rx_tl);
+
+	if (status == 0)
+		*data = ((u16)hi << 8) | lo;
+
+	return status;
+}
+
 /**
 *  txgbe_read_i2c_word_int - Reads 16 bit word over I2C
 *  @hw: pointer to hardware structure
@@ -957,9 +1045,12 @@ STATIC s32 txgbe_read_i2c_word_int(struct txgbe_hw *hw, u16 byte_offset,
 					  u8 dev_addr, u16 *data, bool lock)
 {
 	s32 status = 0;
+	u32 swfw_mask = hw->phy.phy_semaphore_mask;
 
 	UNREFERENCED_PARAMETER(dev_addr);
-	UNREFERENCED_PARAMETER(lock);
+
+	if (lock && 0 != TCALL(hw, mac.ops.acquire_swfw_sync, swfw_mask))
+		return TXGBE_ERR_SWFW_SYNC;
 
 	if ((hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core0) ||
 		(hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core1)) {
@@ -1000,6 +1091,17 @@ STATIC s32 txgbe_read_i2c_word_int(struct txgbe_hw *hw, u16 byte_offset,
 		*data += 0xFF & rd32(hw, TXGBE_I2C_DATA_CMD);
 	} else if ((hw->phy.sfp_type == txgbe_sfp_type_10g_cu_core0) ||
 		(hw->phy.sfp_type == txgbe_sfp_type_10g_cu_core1)) {
+		u16 tmp;
+
+		if (txgbe_sfp_i2c_fix) {
+			status = txgbe_read_i2c_sfp_phy_word_10g_cu_fix(hw, byte_offset, &tmp);
+			if (status == 0) {
+				*data = tmp;
+				goto out;
+			}
+			/* On failure, fall back to the legacy 2-byte transaction. */
+		}
+
 		/* wait tx empty */
 		status = po32m(hw, TXGBE_I2C_RAW_INTR_STAT,
 							TXGBE_I2C_INTR_STAT_TX_EMPTY, TXGBE_I2C_INTR_STAT_TX_EMPTY,
@@ -1042,6 +1144,9 @@ STATIC s32 txgbe_read_i2c_word_int(struct txgbe_hw *hw, u16 byte_offset,
 	}
 
 out:
+	if (lock)
+		TCALL(hw, mac.ops.release_swfw_sync, swfw_mask);
+
 	return status;
 }
 

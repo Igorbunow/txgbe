@@ -1,3 +1,11 @@
 Support
 =======
 If you got any problem, contact Wangxun support team via support@trustnetic.com
+
+Module parameters
+=================
+- sfp_i2c_fix (bool, default 0)
+  Optional workaround for some 10G copper SFP modules where reading a 16-bit
+  word from the internal PHY over the I2C/MCU bridge may return the low byte
+  as a duplicate of the high byte. When enabled, the driver reads the word as
+  two separate single-byte transactions for debugging and validation.
