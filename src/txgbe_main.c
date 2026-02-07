@@ -6994,7 +6994,7 @@ static int __devinit txgbe_sw_init(struct txgbe_adapter *adapter)
 	}
 
 	txgbe_flash_read_dword(hw, 0x13a, &fw_version);
-	snprintf(adapter->fl_version, sizeof(adapter->fw_version),
+	snprintf(adapter->fl_version, sizeof(adapter->fl_version),
 			 "0x%08x", fw_version);
 	
 
@@ -7005,7 +7005,7 @@ static int __devinit txgbe_sw_init(struct txgbe_adapter *adapter)
 	}
 	adapter->mac_table = kzalloc(sizeof(struct txgbe_mac_addr) *
 				     hw->mac.num_rar_entries,
-				     GFP_ATOMIC);
+				     GFP_KERNEL);
 	if (!adapter->mac_table) {
 		err = TXGBE_ERR_OUT_OF_MEM;
 		e_err(probe, "mac_table allocation failed: %d\n", err);
@@ -11995,6 +11995,7 @@ static int __devinit txgbe_probe(struct pci_dev *pdev,
 	u32 etrack_id = 0;
 	u16 build = 0, major = 0, patch = 0;
 	char *info_string, *i_s_var;
+	size_t i_s_len;
 	u8 part_str[TXGBE_PBANUM_LENGTH];
 #ifdef HAVE_TX_MQ
 	unsigned int indices = MAX_TX_QUEUES;
@@ -12613,29 +12614,36 @@ static int __devinit txgbe_probe(struct pci_dev *pdev,
 		goto no_info_string;
 	}
 	i_s_var = info_string;
-	i_s_var += sprintf(info_string, "Enabled Features: ");
-	i_s_var += sprintf(i_s_var, "RxQ: %d TxQ: %d ",
+	i_s_len = INFO_STRING_LEN;
+#define TXGBE_INFO_APPEND(_fmt, _args...) do { \
+		size_t __left = i_s_len - (size_t)(i_s_var - info_string); \
+		if (__left) \
+			i_s_var += scnprintf(i_s_var, __left, _fmt, ##_args); \
+	} while (0)
+
+	TXGBE_INFO_APPEND("Enabled Features: ");
+	TXGBE_INFO_APPEND("RxQ: %d TxQ: %d ",
 			   adapter->num_rx_queues, adapter->num_tx_queues);
 #if IS_ENABLED(CONFIG_FCOE)
 	if (adapter->flags & TXGBE_FLAG_FCOE_ENABLED)
-		i_s_var += sprintf(i_s_var, "FCoE ");
+		TXGBE_INFO_APPEND("FCoE ");
 #endif
 	if (adapter->flags & TXGBE_FLAG_FDIR_HASH_CAPABLE)
-		i_s_var += sprintf(i_s_var, "FdirHash ");
+		TXGBE_INFO_APPEND("FdirHash ");
 	if (adapter->flags & TXGBE_FLAG_DCB_ENABLED)
-		i_s_var += sprintf(i_s_var, "DCB ");
+		TXGBE_INFO_APPEND("DCB ");
 	if (adapter->flags & TXGBE_FLAG_TPH_ENABLED)
-		i_s_var += sprintf(i_s_var, "TPH ");
+		TXGBE_INFO_APPEND("TPH ");
 	if (adapter->flags2 & TXGBE_FLAG2_RSC_ENABLED)
-		i_s_var += sprintf(i_s_var, "RSC ");
+		TXGBE_INFO_APPEND("RSC ");
 #ifndef TXGBE_NO_LRO
 	else if (netdev->features & NETIF_F_LRO)
-		i_s_var += sprintf(i_s_var, "LRO ");
+		TXGBE_INFO_APPEND("LRO ");
 #endif
 	if (adapter->flags & TXGBE_FLAG_VXLAN_OFFLOAD_ENABLE)
-		i_s_var += sprintf(i_s_var, "vxlan_rx ");
+		TXGBE_INFO_APPEND("vxlan_rx ");
 
-	BUG_ON(i_s_var > (info_string + INFO_STRING_LEN));
+#undef TXGBE_INFO_APPEND
 	/* end features printing */
 	e_info(probe, "%s\n", info_string);
 	kfree(info_string);
