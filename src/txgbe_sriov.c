@@ -206,6 +206,9 @@ static void txgbe_get_vfs(struct txgbe_adapter *adapter)
 	vfdev = pci_get_device(vendor, vf_id, NULL);
 	for (; vfdev; vfdev = pci_get_device(vendor, vf_id, vfdev)) {
 		struct vf_data_storage *vfinfo;
+		resource_size_t bar4;
+		void __iomem *b4;
+
 		if (!vfdev->is_virtfn)
 			continue;
 		if (vfdev->physfn != pdev)
@@ -213,10 +216,20 @@ static void txgbe_get_vfs(struct txgbe_adapter *adapter)
 		if (vf >= adapter->num_vfs)
 			continue;
 
-		/*pci_dev_get(vfdev);*/
 		vfinfo = &adapter->vfinfo[vf];
-		vfinfo->vfdev = vfdev;
-		vfinfo->b4_addr = ioremap(pci_resource_start(vfdev, 4), 64);
+		vfinfo->vfdev = pci_dev_get(vfdev);
+		if (!vfinfo->vfdev)
+			continue;
+
+		bar4 = pci_resource_start(vfdev, 4);
+		b4 = ioremap(bar4, 64);
+		if (!b4) {
+			pci_dev_put(vfinfo->vfdev);
+			vfinfo->vfdev = NULL;
+			continue;
+		}
+		vfinfo->b4_addr = b4;
+
 #ifdef CONFIG_PCI_IOV
 		txgbe_vf_backup(adapter, vf);
 #endif
@@ -225,7 +238,7 @@ static void txgbe_get_vfs(struct txgbe_adapter *adapter)
 }
 
 /**
- * txgbe_pet_vfs - Release references to all vf devices
+ * txgbe_put_vfs - Release references to all vf devices
  * @adapter: Pointer to adapter struct
  */
 static void txgbe_put_vfs(struct txgbe_adapter *adapter)
@@ -245,10 +258,11 @@ static void txgbe_put_vfs(struct txgbe_adapter *adapter)
 #endif
 
 		vfinfo = &adapter->vfinfo[vf];
-		iounmap(vfinfo->b4_addr);
+		if (vfinfo->b4_addr)
+			iounmap(vfinfo->b4_addr);
 		vfinfo->b4_addr = NULL;
 		vfinfo->vfdev = NULL;
-		/*pci_dev_put(vfdev);*/
+		pci_dev_put(vfdev);
 	}
 }
 
@@ -315,27 +329,29 @@ int txgbe_disable_sriov(struct txgbe_adapter *adapter)
 	struct txgbe_hw *hw = &adapter->hw;
 
 #ifdef CONFIG_PCI_IOV
+	bool was_enabled = !!(adapter->flags & TXGBE_FLAG_SRIOV_ENABLED);
+
 	/*
-	 * If our VFs are assigned we cannot shut down SR-IOV
-	 * without causing issues, so just leave the hardware
-	 * available but disabled
+	 * If our VFs are assigned we cannot shut down SR-IOV without causing
+	 * issues, so just leave the hardware available but disabled.
 	 */
 	if (pci_vfs_assigned(adapter->pdev)) {
 		e_dev_warn("Unloading driver while VFs are assigned -"
 			   "VFs will not be deallocated\n");
 		return -EPERM;
 	}
-	/* disable iov and allow time for transactions to clear */
-	pci_disable_sriov(adapter->pdev);
+
+	/* Restore and drop VF references while SR-IOV is still enabled. */
+	if (adapter->num_vfs)
+		txgbe_put_vfs(adapter);
+
+	/* Disable iov and allow time for transactions to clear. */
+	if (was_enabled && pci_num_vf(adapter->pdev))
+		pci_disable_sriov(adapter->pdev);
 #endif
 
 	/* set num VFs to 0 to prevent access to vfinfo */
 	adapter->num_vfs = 0;
-
-	/* put the reference to all of the vf devices */
-#ifdef CONFIG_PCI_IOV
-	txgbe_put_vfs(adapter);
-#endif
 
 	/* free VF control structures */
 	kfree(adapter->vfinfo);
@@ -1383,6 +1399,8 @@ static int txgbe_pci_sriov_enable(struct pci_dev __maybe_unused *dev,
 	err = pci_enable_sriov(dev, num_vfs);
 	if (err) {
 		e_dev_warn("Failed to enable PCI sriov: %d\n", err);
+		/* Roll back driver allocations done in __txgbe_enable_sriov() */
+		txgbe_disable_sriov(adapter);
 		goto err_out;
 	}
 	txgbe_get_vfs(adapter);

@@ -12702,6 +12702,16 @@ err_register:
 	txgbe_clear_interrupt_scheme(adapter);
 	txgbe_release_hw_control(adapter);
 err_sw_init:
+#if IS_ENABLED(CONFIG_FCOE)
+#ifndef HAVE_NETDEV_OPS_FCOE_ENABLE
+	/* Roll back DDP pool allocation if probe fails mid-way */
+	if (adapter->flags & TXGBE_FLAG_FCOE_ENABLED) {
+		txgbe_fcoe_ddp_disable(adapter);
+		adapter->flags &= ~TXGBE_FLAG_FCOE_ENABLED;
+		netdev->features &= ~NETIF_F_FCOE_MTU;
+	}
+#endif /* HAVE_NETDEV_OPS_FCOE_ENABLE */
+#endif /* CONFIG_FCOE */
 #ifdef CONFIG_PCI_IOV
 	txgbe_disable_sriov(adapter);
 #endif /* CONFIG_PCI_IOV */

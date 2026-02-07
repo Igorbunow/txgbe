@@ -234,7 +234,7 @@ static void txgbe_remove_xsk_umem(struct txgbe_adapter *adapter, u16 qid)
 	adapter->xsk_pools[qid] = NULL;
 	adapter->num_xsk_pools_used--;
 
-	if (adapter->num_xsk_pools == 0) {
+	if (adapter->num_xsk_pools_used == 0) {
 		kfree(adapter->xsk_pools);
 		adapter->xsk_pools = NULL;
 		adapter->num_xsk_pools = 0;
@@ -262,9 +262,9 @@ static int txgbe_xsk_umem_dma_map(struct txgbe_adapter *adapter,
 
 out_unmap:
 	for (j = 0; j < i; j++) {
-		dma_unmap_page_attrs(dev, pool->pages[i].dma, PAGE_SIZE,
+		dma_unmap_page_attrs(dev, pool->pages[j].dma, PAGE_SIZE,
 				     DMA_BIDIRECTIONAL, TXGBE_RX_DMA_ATTR);
-		pool->pages[i].dma = 0;
+		pool->pages[j].dma = 0;
 	}
 
 	return -1;
@@ -299,6 +299,9 @@ static int txgbe_xsk_umem_enable(struct txgbe_adapter *adapter,
 	struct xdp_umem_fq_reuse *reuseq;
 #endif
 	bool if_running;
+	bool umem_added = false;
+	bool ring_disabled = false;
+	bool ring_enabled = false;
 	int err;
 
 	if (qid >= adapter->num_rx_queues)
@@ -328,32 +331,57 @@ static int txgbe_xsk_umem_enable(struct txgbe_adapter *adapter,
 	if_running = netif_running(adapter->netdev) &&
 		     READ_ONCE(adapter->xdp_prog);
 
-	if (if_running)
+	if (if_running) {
 		txgbe_txrx_ring_disable(adapter, qid);
+		ring_disabled = true;
+	}
 
-	/*to avoid xsk fd get issue in some kernel version*/
+	/* to avoid xsk fd get issue in some kernel version */
 	msleep(400);
 
 	set_bit(qid, adapter->af_xdp_zc_qps);
 	err = txgbe_add_xsk_umem(adapter, pool, qid);
 	if (err)
-		return err;
+		goto err_rollback;
+	umem_added = true;
 
 	if (if_running) {
 		txgbe_txrx_ring_enable(adapter, qid);
-		
+		ring_enabled = true;
+
 		/* Kick start the NAPI context so that receiving will start */
 #ifdef HAVE_NDO_XSK_WAKEUP
 		err = txgbe_xsk_wakeup(adapter->netdev, qid, XDP_WAKEUP_RX);
 #else
 		err = txgbe_xsk_async_xmit(adapter->netdev, qid);
 #endif
-		
 		if (err)
-			return err;
+			goto err_rollback;
 	}
 
 	return 0;
+
+err_rollback:
+	if (ring_enabled)
+		txgbe_txrx_ring_disable(adapter, qid);
+
+	if (umem_added)
+		txgbe_remove_xsk_umem(adapter, qid);
+
+	clear_bit(qid, adapter->af_xdp_zc_qps);
+
+#ifndef HAVE_MEM_TYPE_XSK_BUFF_POOL
+	txgbe_xsk_umem_dma_unmap(adapter, pool);
+#else
+	xsk_pool_dma_unmap(pool, TXGBE_RX_DMA_ATTR);
+#endif /* HAVE_MEM_TYPE_XSK_BUFF_POOL */
+
+	if (ring_disabled)
+		txgbe_txrx_ring_enable(adapter, qid);
+
+	return err;
+
+
 }
 
 static int txgbe_xsk_umem_disable(struct txgbe_adapter *adapter, u16 qid)

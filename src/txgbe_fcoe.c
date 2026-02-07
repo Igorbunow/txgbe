@@ -50,6 +50,7 @@ static inline void txgbe_fcoe_clear_ddp(struct txgbe_fcoe_ddp *ddp)
 	ddp->udp = 0UL;
 	ddp->sgl = NULL;
 	ddp->sgc = 0;
+	ddp->pool = NULL;
 }
 
 /**
@@ -829,25 +830,38 @@ int txgbe_fcoe_enable(struct net_device *netdev)
 {
 	struct txgbe_adapter *adapter = netdev_priv(netdev);
 	struct txgbe_fcoe *fcoe = &adapter->fcoe;
+	bool was_running;
+	int err;
 
 	atomic_inc(&fcoe->refcnt);
 
-	if (!(adapter->flags & TXGBE_FLAG_FCOE_CAPABLE))
+	if (!(adapter->flags & TXGBE_FLAG_FCOE_CAPABLE)) {
+		atomic_dec(&fcoe->refcnt);
 		return -EINVAL;
+	}
 
-	if (adapter->flags & TXGBE_FLAG_FCOE_ENABLED)
+	if (adapter->flags & TXGBE_FLAG_FCOE_ENABLED) {
+		atomic_dec(&fcoe->refcnt);
 		return -EINVAL;
+	}
 
 	e_info(drv, "Enabling FCoE offload features.\n");
 
 	if (adapter->flags & TXGBE_FLAG_SRIOV_ENABLED)
 		e_warn(probe, "Enabling FCoE on PF will disable legacy VFs\n");
 
-	if (netif_running(netdev))
+	was_running = netif_running(netdev);
+	if (was_running)
 		netdev->netdev_ops->ndo_stop(netdev);
 
 	/* Allocate per CPU memory to track DDP pools */
-	txgbe_fcoe_ddp_enable(adapter);
+	err = txgbe_fcoe_ddp_enable(adapter);
+	if (err) {
+		if (was_running)
+			netdev->netdev_ops->ndo_open(netdev);
+		atomic_dec(&fcoe->refcnt);
+		return err;
+	}
 
 	/* enable FCoE and notify stack */
 	adapter->flags |= TXGBE_FLAG_FCOE_ENABLED;
@@ -860,7 +874,7 @@ int txgbe_fcoe_enable(struct net_device *netdev)
 	txgbe_clear_interrupt_scheme(adapter);
 	txgbe_init_interrupt_scheme(adapter);
 
-	if (netif_running(netdev))
+	if (was_running)
 		netdev->netdev_ops->ndo_open(netdev);
 
 	return 0;
@@ -878,13 +892,13 @@ int txgbe_fcoe_disable(struct net_device *netdev)
 {
 	struct txgbe_adapter *adapter = netdev_priv(netdev);
 
-	if (!atomic_dec_and_test(&adapter->fcoe.refcnt))
-		return -EINVAL;
-
 	if (!(adapter->flags & TXGBE_FLAG_FCOE_ENABLED))
 		return -EINVAL;
 
-	e_info(drv, "Disabling FCoE offload features.\n");
+	if (!atomic_dec_and_test(&adapter->fcoe.refcnt))
+		return -EINVAL;
+
+	e_info(drv, "Disabling FCoE offload features\n");
 	if (netif_running(netdev))
 		netdev->netdev_ops->ndo_stop(netdev);
 
