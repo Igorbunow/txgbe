@@ -9,3 +9,11 @@ Module parameters
   word from the internal PHY over the I2C/MCU bridge may return the low byte
   as a duplicate of the high byte. When enabled, the driver reads the word as
   two separate single-byte transactions for debugging and validation.
+
+- csum_iplen_fix (int, default 1)
+  Controls how the IP header length is encoded in Tx context descriptors
+  used for checksum/TSO offloads.
+  * 1: use DWORD units (4-byte). This is the default.
+  * 0: legacy mode (2-byte words). Keep for regression testing only.
+  NOTE: this parameter is module-load-only (read-only at runtime). Changing it
+  while the device is running may wedge Tx and trigger a reset.
