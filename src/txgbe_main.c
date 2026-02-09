@@ -148,6 +148,65 @@ MODULE_DESCRIPTION("WangXun(R) 10 Gigabit PCI Express Network Driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
 
+/*
+ * csum_iplen_fix:
+ * Some vendor releases encode the IP header length field in the Tx context
+ * descriptor using 2-byte words. The original ixgbe lineage uses DWORDs
+ * (4-byte units). Default to DWORDs; legacy mode is kept for regression
+ * testing. This knob is module-load-only: changing it at runtime can wedge
+ * Tx and trigger a reset on some systems.
+ */
+static int csum_iplen_fix __read_mostly = 0;
+module_param(csum_iplen_fix, int, 0444);
+MODULE_PARM_DESC(csum_iplen_fix,
+		"Fix Tx context IP header length units for checksum/TSO offload "
+		"(0=legacy 2-byte words, 1=DWORDs; set at module load, read-only at runtime)");
+
+static inline u32 txgbe_ctx_iplen_bytes(unsigned int ip_hlen)
+{
+	if (unlikely(csum_iplen_fix))
+		return ip_hlen >> 2;
+	return ip_hlen >> 1;
+}
+
+static inline u32 txgbe_ctx_iplen_units(const struct sk_buff *skb)
+{
+	return txgbe_ctx_iplen_bytes(skb_network_header_len(skb));
+}
+
+
+/*
+ * irq_nobalance:
+ * Some platforms may not support changing IRQ affinity for MSI/MSI-X
+ * interrupts. In such cases, attempting to steer IRQs (either directly or via
+ * userspace like irqbalance) can trigger noisy kernel messages such as:
+ *   "IRQxxx: set affinity failed(-22)".
+ *
+ * When enabled, we request IRQs with IRQF_NO_BALANCING and also skip setting
+ * IRQ affinity hints. This keeps legacy behaviour by default on x86, while
+ * being conservative on ARM/ARM64 where the issue is commonly observed.
+ *
+ * Note: this is a load-time option. Changing it after the driver has
+ * requested IRQs will not re-request interrupts.
+ */
+#ifndef IRQF_NO_BALANCING
+#define IRQF_NO_BALANCING 0
+#endif
+
+static int irq_nobalance __read_mostly = 0;
+/*
+#if defined(CONFIG_ARM64) || defined(CONFIG_ARM)
+    1;
+#else
+    0;
+#endif
+*/
+
+module_param(irq_nobalance, int, 0444);
+MODULE_PARM_DESC(irq_nobalance,
+        "Disable irqbalance/affinity changes for MSI-X vectors "
+        "(0=allow balancing, 1=no balancing; default: 1 on ARM/ARM64, 0 on x86)");
+
 #ifdef HAVE_XDP_SUPPORT
 DEFINE_STATIC_KEY_FALSE(txgbe_xdp_locking_key);
 EXPORT_SYMBOL(txgbe_xdp_locking_key);
@@ -3561,6 +3620,7 @@ static int txgbe_request_msix_irqs(struct txgbe_adapter *adapter)
 	struct net_device *netdev = adapter->netdev;
 	int vector, err;
 	int ri = 0, ti = 0;
+	unsigned long irq_flags = irq_nobalance ? IRQF_NO_BALANCING : 0;
 
 	for (vector = 0; vector < adapter->num_q_vectors; vector++) {
 		struct txgbe_q_vector *q_vector = adapter->q_vector[vector];
@@ -3580,7 +3640,7 @@ static int txgbe_request_msix_irqs(struct txgbe_adapter *adapter)
 			/* skip this unused q_vector */
 			continue;
 		}
-		err = request_irq(entry->vector, &txgbe_msix_clean_rings, 0,
+		err = request_irq(entry->vector, &txgbe_msix_clean_rings, irq_flags,
 				  q_vector->name, q_vector);
 		if (err) {
 			e_err(probe, "request_irq failed for MSIX interrupt"
@@ -3589,16 +3649,27 @@ static int txgbe_request_msix_irqs(struct txgbe_adapter *adapter)
 		}
 #ifdef HAVE_IRQ_AFFINITY_HINT
 		/* If Flow Director is enabled, set interrupt affinity */
-		if (adapter->flags & TXGBE_FLAG_FDIR_HASH_CAPABLE) {
+		if (!irq_nobalance &&
+		    (adapter->flags & TXGBE_FLAG_FDIR_HASH_CAPABLE) &&
+		    !cpumask_empty(&q_vector->affinity_mask)) {
 			/* assign the mask for this irq */
-			irq_set_affinity_hint(entry->vector,
-					      &q_vector->affinity_mask);
+			/*
+			 * Some platforms (and early boot stages) may not have the target
+			 * CPU online yet, leaving affinity_mask empty. Passing an empty
+			 * cpumask to irq_set_affinity_hint() may cause -EINVAL and a noisy
+			 * "IRQxxx: set affinity failed(-22)" message during boot.
+			 *
+			 * Only set a hint when the mask is non-empty.
+			 */
+			if (!cpumask_empty(&q_vector->affinity_mask))
+				irq_set_affinity_hint(entry->vector,
+						      &q_vector->affinity_mask);
 		}
 #endif /* HAVE_IRQ_AFFINITY_HINT */
 	}
 
 	err = request_irq(adapter->msix_entries[vector].vector,
-			  txgbe_msix_other, 0, netdev->name, adapter);
+			  txgbe_msix_other, irq_flags, netdev->name, adapter);
 	if (err) {
 		e_err(probe, "request_irq for msix_other failed: %d\n", err);
 		goto free_queue_irqs;
@@ -3872,7 +3943,7 @@ void txgbe_configure_tx_ring(struct txgbe_adapter *adapter,
 	if (!test_and_set_bit(__TXGBE_TX_XPS_INIT_DONE, &ring->state)) {
 		struct txgbe_q_vector *q_vector = ring->q_vector;
 
-		if (q_vector)
+		if (q_vector && !cpumask_empty(&q_vector->affinity_mask))
 			netif_set_xps_queue(adapter->netdev,
 					    &q_vector->affinity_mask,
 					    ring->queue_index);
@@ -9485,11 +9556,12 @@ static int txgbe_tso(struct txgbe_ring *tx_ring,
 			break;
 		}
 
-		vlan_macip_lens = skb_inner_network_header_len(skb) >> 1;
+		vlan_macip_lens =
+			txgbe_ctx_iplen_bytes(skb_inner_network_header_len(skb));
 	} else
-		vlan_macip_lens = skb_network_header_len(skb) >> 1;
+		vlan_macip_lens = txgbe_ctx_iplen_units(skb);
 #else
-		vlan_macip_lens = skb_network_header_len(skb) >> 1;
+		vlan_macip_lens = txgbe_ctx_iplen_units(skb);
 #endif /* HAVE_ENCAP_TSO_OFFLOAD */
 	vlan_macip_lens |= skb_network_offset(skb) << TXGBE_TXD_MACLEN_SHIFT;
 	vlan_macip_lens |= first->tx_flags & TXGBE_TX_FLAGS_VLAN_MASK;
@@ -9598,12 +9670,12 @@ static void txgbe_tx_csum(struct txgbe_ring *tx_ring,
 		switch (network_hdr.ipv4->version) {
 		case IPVERSION:
 			vlan_macip_lens |=
-				(transport_hdr.raw - network_hdr.raw) >> 1;
+				txgbe_ctx_iplen_bytes(transport_hdr.raw - network_hdr.raw);
 			l4_prot = network_hdr.ipv4->protocol;
 			break;
 		case 6:
 			vlan_macip_lens |=
-				(transport_hdr.raw - network_hdr.raw) >> 1;
+				txgbe_ctx_iplen_bytes(transport_hdr.raw - network_hdr.raw);
 			l4_prot = network_hdr.ipv6->nexthdr;
 			break;
 		default:
@@ -9613,12 +9685,12 @@ static void txgbe_tx_csum(struct txgbe_ring *tx_ring,
 #else /* HAVE_ENCAP_TSO_OFFLOAD */
 		switch (first->protocol) {
 		case __constant_htons(ETH_P_IP):
-			vlan_macip_lens |= skb_network_header_len(skb) >> 1;
+			vlan_macip_lens |= txgbe_ctx_iplen_units(skb);
 			l4_prot = ip_hdr(skb)->protocol;
 			break;
 #ifdef NETIF_F_IPV6_CSUM
 		case __constant_htons(ETH_P_IPV6):
-			vlan_macip_lens |= skb_network_header_len(skb) >> 1;
+			vlan_macip_lens |= txgbe_ctx_iplen_units(skb);
 			l4_prot = ipv6_hdr(skb)->nexthdr;
 			break;
 #endif /* NETIF_F_IPV6_CSUM */
