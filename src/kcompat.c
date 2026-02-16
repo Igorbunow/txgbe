@@ -23,6 +23,9 @@
 
 #include "txgbe.h"
 #include "kcompat.h"
+#ifdef HAVE_SCTP
+#include <linux/sctp.h>
+#endif
 
 /*****************************************************************************/
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2, 4, 8)) || defined __VMKLNX__

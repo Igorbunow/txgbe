@@ -49,10 +49,6 @@
 #define BP_EXTENDED_STATS
 #endif
 
-#ifdef HAVE_SCTP
-#include <linux/sctp.h>
-#endif
-
 #ifdef HAVE_INCLUDE_LINUX_MDIO_H
 #include <linux/mdio.h>
 #endif

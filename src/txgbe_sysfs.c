@@ -40,6 +40,83 @@
 #endif
 
 #ifdef TXGBE_HWMON
+#ifdef HAVE_HWMON_DEVICE_REGISTER_WITH_INFO
+static int txgbe_hwmon_read(struct device *dev,
+			    enum hwmon_sensor_types type,
+			    u32 attr, int channel, long *val)
+{
+	struct txgbe_adapter *adapter = dev_get_drvdata(dev);
+	unsigned int value;
+
+	if (!adapter)
+		return -EIO;
+
+	if (type != hwmon_temp || channel != 0 || attr != hwmon_temp_input)
+		return -EOPNOTSUPP;
+
+	/* reset the temp field */
+	TCALL(&adapter->hw, mac.ops.get_thermal_sensor_data);
+
+	value = adapter->hw.mac.thermal_sensor_data.sensor.temp;
+
+	/* report millidegree */
+	*val = value * 1000;
+
+	return 0;
+}
+
+static umode_t txgbe_hwmon_is_visible(const void *data __always_unused,
+				      enum hwmon_sensor_types type,
+				      u32 attr, int channel)
+{
+	if (type == hwmon_temp && channel == 0 && attr == hwmon_temp_input)
+		return 0444;
+
+	return 0;
+}
+
+static const struct hwmon_ops txgbe_hwmon_ops = {
+	.is_visible = txgbe_hwmon_is_visible,
+	.read = txgbe_hwmon_read,
+};
+
+static const struct hwmon_channel_info *txgbe_hwmon_info[] = {
+	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT),
+	NULL
+};
+
+static const struct hwmon_chip_info txgbe_hwmon_chip_info = {
+	.ops = &txgbe_hwmon_ops,
+	.info = txgbe_hwmon_info,
+};
+#endif /* HAVE_HWMON_DEVICE_REGISTER_WITH_INFO */
+
+static struct device *txgbe_hwmon_device_register(struct txgbe_adapter *adapter)
+{
+#if defined(HAVE_HWMON_DEVICE_REGISTER_WITH_INFO) || \
+    defined(HAVE_HWMON_DEVICE_REGISTER_WITH_GROUPS)
+	struct device *hwmon_dev;
+#endif
+
+#ifdef HAVE_HWMON_DEVICE_REGISTER_WITH_INFO
+	hwmon_dev = hwmon_device_register_with_info(pci_dev_to_dev(adapter->pdev),
+						    "txgbe", adapter,
+						    &txgbe_hwmon_chip_info,
+						    NULL);
+	if (!IS_ERR(hwmon_dev))
+		return hwmon_dev;
+#endif
+
+#ifdef HAVE_HWMON_DEVICE_REGISTER_WITH_GROUPS
+	hwmon_dev = hwmon_device_register_with_groups(pci_dev_to_dev(adapter->pdev),
+						      "txgbe", NULL, NULL);
+	if (!IS_ERR(hwmon_dev))
+		return hwmon_dev;
+#endif
+
+	return hwmon_device_register(pci_dev_to_dev(adapter->pdev));
+}
+
 /* hwmon callback functions */
 static ssize_t txgbe_hwmon_show_temp(struct device __always_unused *dev,
 				     struct device_attribute *attr,
@@ -135,8 +212,15 @@ static int txgbe_add_hwmon_attr(struct txgbe_adapter *adapter, int type)
 	txgbe_attr->dev_attr.attr.mode = S_IRUGO;
 	txgbe_attr->dev_attr.attr.name = txgbe_attr->name;
 
+	/* Avoid EEXIST on stale entries after partial init/unload paths. */
+	device_remove_file(pci_dev_to_dev(adapter->pdev),
+			   &txgbe_attr->dev_attr);
+
 	rc = device_create_file(pci_dev_to_dev(adapter->pdev),
 				&txgbe_attr->dev_attr);
+	if (rc)
+		e_dev_warn("hwmon sysfs create failed: %s rc=%d\n",
+			   txgbe_attr->name, rc);
 
 	if (rc == 0)
 		++adapter->txgbe_hwmon_buff.n_hwmon;
@@ -154,15 +238,21 @@ static void txgbe_sysfs_del_adapter(
 	if (adapter == NULL)
 		return;
 
-	for (i = 0; i < adapter->txgbe_hwmon_buff.n_hwmon; i++) {
-		device_remove_file(pci_dev_to_dev(adapter->pdev),
-			   &adapter->txgbe_hwmon_buff.hwmon_list[i].dev_attr);
+	if (adapter->txgbe_hwmon_buff.hwmon_list) {
+		for (i = 0; i < adapter->txgbe_hwmon_buff.n_hwmon; i++) {
+			device_remove_file(pci_dev_to_dev(adapter->pdev),
+				   &adapter->txgbe_hwmon_buff.hwmon_list[i].dev_attr);
+		}
+
+		kfree(adapter->txgbe_hwmon_buff.hwmon_list);
+		adapter->txgbe_hwmon_buff.hwmon_list = NULL;
 	}
 
-	kfree(adapter->txgbe_hwmon_buff.hwmon_list);
-
-	if (adapter->txgbe_hwmon_buff.device)
+	if (!IS_ERR_OR_NULL(adapter->txgbe_hwmon_buff.device))
 		hwmon_device_unregister(adapter->txgbe_hwmon_buff.device);
+	adapter->txgbe_hwmon_buff.device = NULL;
+
+	adapter->txgbe_hwmon_buff.n_hwmon = 0;
 #endif /* TXGBE_HWMON */
 }
 
@@ -195,6 +285,8 @@ int txgbe_sysfs_init(struct txgbe_adapter *adapter)
 	 * max num sensors * values (temp, alamthresh, dalarmthresh)
 	 */
 	n_attrs = 3;
+	txgbe_hwmon->device = NULL;
+	txgbe_hwmon->n_hwmon = 0;
 	txgbe_hwmon->hwmon_list = kcalloc(n_attrs, sizeof(struct hwmon_attr),
 					  GFP_KERNEL);
 	if (!txgbe_hwmon->hwmon_list) {
@@ -202,10 +294,10 @@ int txgbe_sysfs_init(struct txgbe_adapter *adapter)
 		goto err;
 	}
 
-	txgbe_hwmon->device =
-			hwmon_device_register(pci_dev_to_dev(adapter->pdev));
+	txgbe_hwmon->device = txgbe_hwmon_device_register(adapter);
 	if (IS_ERR(txgbe_hwmon->device)) {
 		rc = PTR_ERR(txgbe_hwmon->device);
+		txgbe_hwmon->device = NULL;
 		goto err;
 	}
 

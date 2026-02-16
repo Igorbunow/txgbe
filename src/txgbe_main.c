@@ -55,6 +55,9 @@
 
 #include <linux/if_bridge.h>
 #include "txgbe.h"
+#ifdef HAVE_SCTP
+#include <linux/sctp.h>
+#endif
 #ifdef HAVE_XDP_SUPPORT
 #include <linux/bpf.h>
 #include <linux/bpf_trace.h>
