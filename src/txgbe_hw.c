@@ -27,6 +27,16 @@
 #include "txgbe_phy.h"
 #include "txgbe_dcb.h"
 #include "txgbe.h"
+#include <linux/spinlock.h>
+
+/**
+ * XPCS/ETHPHY indirect access uses an address+data transaction via IDA
+ * registers. When both ports (PFs) are active, concurrent transactions can
+ * corrupt the IDA address latch and lead to wrong reads/writes. Serialize
+ * these transactions across the whole driver.
+ */
+static DEFINE_SPINLOCK(txgbe_inda_lock);
+
 
 #define TXGBE_SP_MAX_TX_QUEUES  128
 #define TXGBE_SP_MAX_RX_QUEUES  128
@@ -52,33 +62,35 @@ s32 txgbe_check_mac_link(struct txgbe_hw *hw, u32 *speed,
 
 u32 rd32_ephy(struct txgbe_hw *hw, u32 addr)
 {
-	unsigned int portRegOffset;
+	unsigned long flags;
 	u32 data;
 
-	/* Set the LAN port indicator to portRegOffset[1] */
-	/* 1st, write the regOffset to IDA_ADDR register */
-	portRegOffset = TXGBE_ETHPHY_IDA_ADDR;
-	wr32(hw, portRegOffset, addr);
+	/*
+	 * IDA is an indirect interface: write address to IDA_ADDR then access
+	 * IDA_DATA. Keep it serialized across PFs and ports.
+	 */
+	spin_lock_irqsave(&txgbe_inda_lock, flags);
+	wr32(hw, TXGBE_ETHPHY_IDA_ADDR, addr);
+	data = rd32(hw, TXGBE_ETHPHY_IDA_DATA);
+	spin_unlock_irqrestore(&txgbe_inda_lock, flags);
 
-	/* 2nd, read the data from IDA_DATA register */
-	portRegOffset = TXGBE_ETHPHY_IDA_DATA;
-	data = rd32(hw, portRegOffset);
 	return data;
 }
 
 
 u32 txgbe_rd32_epcs(struct txgbe_hw *hw, u32 addr)
 {
-	unsigned int portRegOffset;
+	unsigned long flags;
 	u32 data;
-	/* Set the LAN port indicator to portRegOffset[1] */
-	/* 1st, write the regOffset to IDA_ADDR register */
-	portRegOffset = TXGBE_XPCS_IDA_ADDR;
-	wr32(hw, portRegOffset, addr);
 
-	/* 2nd, read the data from IDA_DATA register */
-	portRegOffset = TXGBE_XPCS_IDA_DATA;
-	data = rd32(hw, portRegOffset);
+	/*
+	 * IDA is an indirect interface: write address to IDA_ADDR then access
+	 * IDA_DATA. Keep it serialized across PFs and ports.
+	 */
+	spin_lock_irqsave(&txgbe_inda_lock, flags);
+	wr32(hw, TXGBE_XPCS_IDA_ADDR, addr);
+	data = rd32(hw, TXGBE_XPCS_IDA_DATA);
+	spin_unlock_irqrestore(&txgbe_inda_lock, flags);
 
 	return data;
 }
@@ -86,30 +98,30 @@ u32 txgbe_rd32_epcs(struct txgbe_hw *hw, u32 addr)
 
 void txgbe_wr32_ephy(struct txgbe_hw *hw, u32 addr, u32 data)
 {
-	unsigned int portRegOffset;
+	unsigned long flags;
 
-	/* Set the LAN port indicator to portRegOffset[1] */
-	/* 1st, write the regOffset to IDA_ADDR register */
-	portRegOffset = TXGBE_ETHPHY_IDA_ADDR;
-	wr32(hw, portRegOffset, addr);
-
-	/* 2nd, read the data from IDA_DATA register */
-	portRegOffset = TXGBE_ETHPHY_IDA_DATA;
-	wr32(hw, portRegOffset, data);
+	/*
+	 * IDA is an indirect interface: write address to IDA_ADDR then access
+	 * IDA_DATA. Keep it serialized across PFs and ports.
+	 */
+	spin_lock_irqsave(&txgbe_inda_lock, flags);
+	wr32(hw, TXGBE_ETHPHY_IDA_ADDR, addr);
+	wr32(hw, TXGBE_ETHPHY_IDA_DATA, data);
+	spin_unlock_irqrestore(&txgbe_inda_lock, flags);
 }
 
 void txgbe_wr32_epcs(struct txgbe_hw *hw, u32 addr, u32 data)
 {
-	unsigned int portRegOffset;
+	unsigned long flags;
 
-	/* Set the LAN port indicator to portRegOffset[1] */
-	/* 1st, write the regOffset to IDA_ADDR register */
-	portRegOffset = TXGBE_XPCS_IDA_ADDR;
-	wr32(hw, portRegOffset, addr);
-
-	/* 2nd, read the data from IDA_DATA register */
-	portRegOffset = TXGBE_XPCS_IDA_DATA;
-	wr32(hw, portRegOffset, data);
+	/*
+	 * IDA is an indirect interface: write address to IDA_ADDR then access
+	 * IDA_DATA. Keep it serialized across PFs and ports.
+	 */
+	spin_lock_irqsave(&txgbe_inda_lock, flags);
+	wr32(hw, TXGBE_XPCS_IDA_ADDR, addr);
+	wr32(hw, TXGBE_XPCS_IDA_DATA, data);
+	spin_unlock_irqrestore(&txgbe_inda_lock, flags);
 }
 
 
