@@ -210,6 +210,68 @@ MODULE_PARM_DESC(irq_nobalance,
         "Disable irqbalance/affinity changes for MSI-X vectors "
         "(0=allow balancing, 1=no balancing; default: 1 on ARM/ARM64, 0 on x86)");
 
+/*
+ * pcie_disable_aspm:
+ * Some platforms are sensitive to PCIe ASPM (L0s/L1) with high-throughput
+ * endpoints and may show AER reports such as Surprise Down / Completion
+ * Timeout under sustained load.
+ *
+ * This is a conservative, opt-in knob which disables ASPM on both the endpoint
+ * function and its immediate upstream bridge (if any). It is applied in probe
+ * (load-time), before queues are brought up.
+ */
+#ifndef PCI_EXP_LNKCTL_ASPM_L0S
+#define PCI_EXP_LNKCTL_ASPM_L0S 0x0001
+#endif
+#ifndef PCI_EXP_LNKCTL_ASPM_L1
+#define PCI_EXP_LNKCTL_ASPM_L1  0x0002
+#endif
+
+static int pcie_disable_aspm __read_mostly = 0;
+module_param(pcie_disable_aspm, int, 0444);
+MODULE_PARM_DESC(pcie_disable_aspm,
+		"Disable PCIe ASPM (L0s/L1) on the device link (0=keep, 1=disable; default: 0)");
+
+static bool txgbe_disable_aspm_on_dev(struct pci_dev *pdev)
+{
+	int pos;
+	u16 lnkctl, new_lnkctl;
+
+	if (!pdev)
+		return false;
+
+	pos = pci_find_capability(pdev, PCI_CAP_ID_EXP);
+	if (!pos)
+		return false;
+
+	if (pci_read_config_word(pdev, pos + PCI_EXP_LNKCTL, &lnkctl))
+		return false;
+
+	new_lnkctl = lnkctl & ~(PCI_EXP_LNKCTL_ASPM_L0S | PCI_EXP_LNKCTL_ASPM_L1);
+	if (new_lnkctl == lnkctl)
+		return false;
+
+	pci_write_config_word(pdev, pos + PCI_EXP_LNKCTL, new_lnkctl);
+	return true;
+}
+
+static void txgbe_pcie_maybe_disable_aspm(struct pci_dev *pdev)
+{
+	bool changed = false;
+	struct pci_dev *up;
+
+	if (!pcie_disable_aspm)
+		return;
+
+	changed |= txgbe_disable_aspm_on_dev(pdev);
+	up = pdev && pdev->bus ? pdev->bus->self : NULL;
+	changed |= txgbe_disable_aspm_on_dev(up);
+
+	if (changed)
+		dev_info(pci_dev_to_dev(pdev),
+			 "PCIe ASPM disabled on endpoint/upstream bridge (module param pcie_disable_aspm=1)\n");
+}
+
 #ifdef HAVE_XDP_SUPPORT
 DEFINE_STATIC_KEY_FALSE(txgbe_xdp_locking_key);
 EXPORT_SYMBOL(txgbe_xdp_locking_key);
@@ -12151,6 +12213,9 @@ static int __devinit txgbe_probe(struct pci_dev *pdev,
 	err = pci_enable_device_mem(pdev);
 	if (err)
 		return err;
+
+	/* Optional workaround for platforms sensitive to PCIe ASPM */
+	txgbe_pcie_maybe_disable_aspm(pdev);
 
 
 	if (!dma_set_mask(pci_dev_to_dev(pdev), DMA_BIT_MASK(64)) &&
