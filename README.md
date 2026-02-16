@@ -46,6 +46,25 @@ Target kernels (must not regress):
 > Note: some distributions backport API changes into “older” kernel versions. For that reason, this project
 > prefers feature-detection (kcompat) over purely version-based logic.
 
+### Latest compatibility update (hwmon deprecation on 5.15+)
+
+The driver no longer relies only on legacy `hwmon_device_register()` when newer APIs are available.
+
+Current registration flow:
+- try `hwmon_device_register_with_info()` first
+- fallback to `hwmon_device_register_with_groups()` if needed
+- fallback to legacy `hwmon_device_register()` only if both fail
+
+Implementation notes:
+- uses kcompat feature detection (`HAVE_HWMON_DEVICE_REGISTER_WITH_INFO`, `HAVE_HWMON_DEVICE_REGISTER_WITH_GROUPS`)
+- adds safe cleanup for hwmon error paths (`IS_ERR_OR_NULL` handling)
+- keeps existing driver temperature sysfs attributes (`temp0_input`, `temp0_alarmthresh`, `temp0_dalarmthresh`)
+
+Validation status:
+- runtime validated with `insmod` on 5.15.148-tegra (Jetson AGX Orin): module load/unload works, link up/down works, MTU change to 9000 works
+- matrix build validated:
+  3.18.140, 4.1.52, 4.4.302, 4.9.337, 4.14.336, 4.19.325, 5.4.302, 5.10.250, 5.15.200, 6.1.163, 6.6.124, 6.12.71, 6.18.10
+
 ### Upstream LTS reference (what series to pick)
 
 | Branch | Release Date | EOL Date (upstream) |
