@@ -52,6 +52,26 @@ typedef struct ethtool_ts_info txgbe_ethtool_ts_info_t;
 #define ETH_GSTRING_LEN 32
 #endif
 
+/*
+ * Optional, potentially expensive ethtool -S extensions.
+ *
+ * Disabled by default to avoid extra MMIO reads and to keep ethtool output
+ * compact for normal users.
+ *
+ * Enable only for deep debugging:
+ *   modprobe txgbe ethtool_ext_stats=1
+ *
+ * NOTE: module parameters are typically set at module load time. For built-in
+ *       drivers, it can also be set from kernel cmdline as:
+ *         txgbe.ethtool_ext_stats=1
+ */
+static bool txgbe_ethtool_ext_stats __read_mostly;
+module_param_named(ethtool_ext_stats, txgbe_ethtool_ext_stats, bool, 0444);
+MODULE_PARM_DESC(ethtool_ext_stats,
+		 "Enable extended ethtool -S stats (ring pointers/usage). Default: 0");
+
+#define TXGBE_RING_EXT_STATS_PER_Q 6
+
 #define TXGBE_ALL_RAR_ENTRIES 16
 
 #ifdef ETHTOOL_OPS_COMPAT
@@ -1814,6 +1834,10 @@ static void txgbe_get_drvinfo(struct net_device *netdev,
 	}else{
 		drvinfo->n_stats = TXGBE_STATS_LEN;
 	}
+	if (txgbe_ethtool_ext_stats)
+		drvinfo->n_stats +=
+			(adapter->num_tx_queues + adapter->num_rx_queues) *
+			TXGBE_RING_EXT_STATS_PER_Q;
 	drvinfo->testinfo_len = TXGBE_TEST_LEN;
 	drvinfo->regdump_len = txgbe_get_regs_len(netdev);
 }
@@ -2002,11 +2026,20 @@ static int txgbe_get_sset_count(struct net_device *netdev, int sset)
 	case ETH_SS_TEST:
 		return TXGBE_TEST_LEN;
 	case ETH_SS_STATS:
-		if (adapter->num_tx_queues <= TXGBE_NUM_RX_QUEUES) {
-			return  TXGBE_STATS_LEN - (TXGBE_NUM_RX_QUEUES - adapter->num_tx_queues)*
-					(sizeof(struct txgbe_queue_stats) / sizeof(u64))*2;
-		}else{
-			return TXGBE_STATS_LEN;
+		{
+			int len;
+			if (adapter->num_tx_queues <= TXGBE_NUM_RX_QUEUES)
+				len = TXGBE_STATS_LEN -
+					(TXGBE_NUM_RX_QUEUES - adapter->num_tx_queues) *
+					(sizeof(struct txgbe_queue_stats) / sizeof(u64)) * 2;
+			else
+				len = TXGBE_STATS_LEN;
+
+			if (txgbe_ethtool_ext_stats)
+				len +=
+					(adapter->num_tx_queues + adapter->num_rx_queues) *
+					TXGBE_RING_EXT_STATS_PER_Q;
+			return len;
 		}
 	case ETH_SS_PRIV_FLAGS:
 		return TXGBE_PRIV_FLAGS_STR_LEN;
@@ -2191,6 +2224,47 @@ static void txgbe_get_ethtool_stats(struct net_device *netdev,
 		data[i++] = adapter->stats.pxonrxc[j];
 		data[i++] = adapter->stats.pxoffrxc[j];
 	}
+
+	/* Optional extended ring state (includes MMIO reads) */
+	if (txgbe_ethtool_ext_stats) {
+		for (j = 0; j < adapter->num_tx_queues; j++) {
+			ring = adapter->tx_ring[j];
+			if (!ring) {
+				data[i++] = 0; /* desc_count */
+				data[i++] = 0; /* desc_unused */
+				data[i++] = 0; /* next_to_use */
+				data[i++] = 0; /* next_to_clean */
+				data[i++] = 0; /* hw_head */
+				data[i++] = 0; /* hw_tail */
+				continue;
+			}
+			data[i++] = ring->count;
+			data[i++] = txgbe_desc_unused(ring);
+			data[i++] = ring->next_to_use;
+			data[i++] = ring->next_to_clean;
+			data[i++] = rd32(&adapter->hw, TXGBE_PX_TR_RP(ring->reg_idx));
+			data[i++] = ring->tail ? readl(ring->tail) : 0;
+		}
+
+		for (j = 0; j < adapter->num_rx_queues; j++) {
+			ring = adapter->rx_ring[j];
+			if (!ring) {
+				data[i++] = 0; /* desc_count */
+				data[i++] = 0; /* desc_unused */
+				data[i++] = 0; /* next_to_use */
+				data[i++] = 0; /* next_to_clean */
+				data[i++] = 0; /* hw_head */
+				data[i++] = 0; /* hw_tail */
+				continue;
+			}
+			data[i++] = ring->count;
+			data[i++] = txgbe_desc_unused(ring);
+			data[i++] = ring->next_to_use;
+			data[i++] = ring->next_to_clean;
+			data[i++] = rd32(&adapter->hw, TXGBE_PX_RR_RP(ring->reg_idx));
+			data[i++] = ring->tail ? readl(ring->tail) : 0;
+		}
+	}
 }
 
 static void txgbe_get_priv_flag_strings(struct net_device *netdev, u8 *data)
@@ -2267,6 +2341,40 @@ static void txgbe_get_strings(struct net_device *netdev, u32 stringset,
 			p += ETH_GSTRING_LEN;
 			sprintf(p, "rx_pb_%u_pxoff", i);
 			p += ETH_GSTRING_LEN;
+		}
+
+		if (txgbe_ethtool_ext_stats) {
+			/* TX per-queue ring state */
+			for (i = 0; i < adapter->num_tx_queues; i++) {
+				sprintf(p, "tx_ring_%u_desc_count", i);
+				p += ETH_GSTRING_LEN;
+				sprintf(p, "tx_ring_%u_desc_unused", i);
+				p += ETH_GSTRING_LEN;
+				sprintf(p, "tx_ring_%u_next_to_use", i);
+				p += ETH_GSTRING_LEN;
+				sprintf(p, "tx_ring_%u_next_to_clean", i);
+				p += ETH_GSTRING_LEN;
+				sprintf(p, "tx_ring_%u_hw_head", i);
+				p += ETH_GSTRING_LEN;
+				sprintf(p, "tx_ring_%u_hw_tail", i);
+				p += ETH_GSTRING_LEN;
+			}
+
+			/* RX per-queue ring state */
+			for (i = 0; i < adapter->num_rx_queues; i++) {
+				sprintf(p, "rx_ring_%u_desc_count", i);
+				p += ETH_GSTRING_LEN;
+				sprintf(p, "rx_ring_%u_desc_unused", i);
+				p += ETH_GSTRING_LEN;
+				sprintf(p, "rx_ring_%u_next_to_use", i);
+				p += ETH_GSTRING_LEN;
+				sprintf(p, "rx_ring_%u_next_to_clean", i);
+				p += ETH_GSTRING_LEN;
+				sprintf(p, "rx_ring_%u_hw_head", i);
+				p += ETH_GSTRING_LEN;
+				sprintf(p, "rx_ring_%u_hw_tail", i);
+				p += ETH_GSTRING_LEN;
+			}
 		}
 		/* BUG_ON(p - data != TXGBE_STATS_LEN * ETH_GSTRING_LEN); */
 		break;
@@ -5117,10 +5225,8 @@ static struct ethtool_ops txgbe_ethtool_ops = {
 	.get_eeprom_len         = txgbe_get_eeprom_len,
 	.get_eeprom             = txgbe_get_eeprom,
 	.set_eeprom             = txgbe_set_eeprom,
-#ifdef HAVE_ETHTOOL_EXTENDED_RINGPARAMS
 	.get_ringparam          = txgbe_get_ringparam,
 	.set_ringparam          = txgbe_set_ringparam,
-#endif
 	.get_pauseparam         = txgbe_get_pauseparam,
 	.set_pauseparam         = txgbe_set_pauseparam,
 	.get_msglevel           = txgbe_get_msglevel,

@@ -27,6 +27,115 @@
 #ifdef HAVE_TXGBE_DEBUG_FS
 #include <linux/debugfs.h>
 #include <linux/module.h>
+#include <linux/seq_file.h>
+
+/*
+ * DebugFS helpers
+ *
+ * NOTE: All debugfs readouts are best-effort diagnostics.
+ *       They must not be relied upon for control/management.
+ */
+
+static u32 txgbe_dbg_rd32(struct txgbe_adapter *adapter, u32 reg)
+{
+	return rd32(&adapter->hw, reg);
+}
+
+static u32 txgbe_dbg_ring_tail(const struct txgbe_ring *ring)
+{
+	if (!ring || !ring->tail)
+		return 0;
+	return readl(ring->tail);
+}
+
+static int txgbe_dbg_rings_show(struct seq_file *m, void *v)
+{
+	struct txgbe_adapter *adapter = m->private;
+	struct net_device *netdev;
+	unsigned int i;
+
+	if (!adapter)
+		return -EINVAL;
+
+	netdev = adapter->netdev;
+	seq_printf(m, "netdev: %s\n", netdev ? netdev->name : "(null)");
+	seq_printf(m, "pci: %s\n", pci_name(adapter->pdev));
+	seq_printf(m, "tx_queues=%u rx_queues=%u\n\n",
+		   adapter->num_tx_queues, adapter->num_rx_queues);
+
+	seq_puts(m,
+		 "TX rings:\n"
+		 "  idx  reg  count  ntu  ntc  unused  hw_head  hw_tail\n");
+	for (i = 0; i < adapter->num_tx_queues; i++) {
+		struct txgbe_ring *ring = adapter->tx_ring[i];
+		u32 hw_head, hw_tail;
+		u32 unused = 0;
+
+		if (!ring)
+			continue;
+
+		/*
+		 * txgbe_desc_unused() returns free descriptors out of ring->count-1.
+		 * Keep both raw pointers and derived values to ease debugging.
+		 */
+		unused = txgbe_desc_unused(ring);
+		hw_head = txgbe_dbg_rd32(adapter, TXGBE_PX_TR_RP(ring->reg_idx));
+		hw_tail = txgbe_dbg_ring_tail(ring);
+
+		seq_printf(m,
+			"  %3u  %3u  %5u  %3u  %3u  %6u  %7u  %7u\n",
+			i,
+			ring->reg_idx,
+			ring->count,
+			ring->next_to_use,
+			ring->next_to_clean,
+			unused,
+			hw_head,
+			hw_tail);
+	}
+
+	seq_puts(m,
+		"\nRX rings:\n"
+		"  idx  reg  count  ntu  ntc  unused  hw_head  hw_tail\n");
+	for (i = 0; i < adapter->num_rx_queues; i++) {
+		struct txgbe_ring *ring = adapter->rx_ring[i];
+		u32 hw_head, hw_tail;
+		u32 unused = 0;
+
+		if (!ring)
+			continue;
+
+		unused = txgbe_desc_unused(ring);
+		hw_head = txgbe_dbg_rd32(adapter, TXGBE_PX_RR_RP(ring->reg_idx));
+		hw_tail = txgbe_dbg_ring_tail(ring);
+
+		seq_printf(m,
+			"  %3u  %3u  %5u  %3u  %3u  %6u  %7u  %7u\n",
+			i,
+			ring->reg_idx,
+			ring->count,
+			ring->next_to_use,
+			ring->next_to_clean,
+			unused,
+			hw_head,
+			hw_tail);
+	}
+
+	return 0;
+}
+
+static int txgbe_dbg_rings_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, txgbe_dbg_rings_show, inode->i_private);
+}
+
+static const struct file_operations txgbe_dbg_rings_fops = {
+	.owner = THIS_MODULE,
+	.open = txgbe_dbg_rings_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
 
 static struct dentry *txgbe_dbg_root;
 static int txgbe_data_mode;
@@ -457,6 +566,12 @@ void txgbe_dbg_adapter_init(struct txgbe_adapter *adapter)
 				    &txgbe_dbg_netdev_ops_fops);
 	if (!pfile)
 		e_dev_err("debugfs netdev_ops for %s failed\n", name);
+
+	pfile = debugfs_create_file("rings", 0400,
+				    adapter->txgbe_dbg_adapter, adapter,
+				    &txgbe_dbg_rings_fops);
+	if (!pfile)
+		e_dev_err("debugfs rings for %s failed\n", name);
 }
 
 /**
