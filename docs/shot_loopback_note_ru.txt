@@ -1,0 +1,120 @@
+Тест петлёй:
+
+Настраиваем (сохраним в sfp_conf_loopback.sh)
+
+```bash
+#!/bin/bash
+
+# Увеличиваем очередь входящих пакетов (КРИТИЧНО для 10G)
+sysctl -w net.core.netdev_max_backlog=30000
+# Увеличиваем буферы
+sysctl -w net.core.rmem_max=134217728
+sysctl -w net.core.wmem_max=134217728
+sysctl -w net.core.rmem_default=134217728
+sysctl -w net.core.wmem_default=134217728
+sysctl -w net.core.optmem_max=20480
+# Тюнинг TCP
+sysctl -w net.ipv4.tcp_rmem="4096 87380 134217728"
+sysctl -w net.ipv4.tcp_wmem="4096 65536 134217728"
+sysctl -w net.ipv4.tcp_window_scaling=1
+sysctl -w net.ipv4.tcp_timestamps=1
+sysctl -w net.ipv4.tcp_sack=1
+
+ip netns del ns_sender
+ip netns del ns_receiver
+
+sysctl -w net.core.rmem_max=67108864
+sysctl -w net.core.wmem_max=67108864
+
+# Создаем неймспейсы
+ip netns add ns_sender
+ip netns add ns_receiver
+
+# Линки
+ip link set enP5p1s0f0 netns ns_sender
+ip link set enP5p1s0f1 netns ns_receiver
+
+# Настройка Sender
+ip netns exec ns_sender ip addr add 10.0.0.1/24 dev enP5p1s0f0
+ip netns exec ns_sender ip link set enP5p1s0f0 up
+ip netns exec ns_sender ip link set dev enP5p1s0f0 mtu 9000
+# Включаем TSO/GSO (важно!)
+ip netns exec ns_sender ethtool -K enP5p1s0f0 tso on gso on sg on
+
+# Настройка Receiver
+ip netns exec ns_receiver ip addr add 10.0.0.2/24 dev enP5p1s0f1
+ip netns exec ns_receiver ip link set enP5p1s0f1 up
+ip netns exec ns_receiver ip link set dev enP5p1s0f1 mtu 9000
+ip netns exec ns_receiver ethtool -K enP5p1s0f1 tso on gso on sg on
+
+# Настройка TCP буферов (только ipv4, т.к. core недоступен, но может унаследоваться)
+ip netns exec ns_sender sysctl -w net.ipv4.tcp_rmem="4096 87380 67108864"
+ip netns exec ns_sender sysctl -w net.ipv4.tcp_wmem="4096 65536 67108864"
+ip netns exec ns_receiver sysctl -w net.ipv4.tcp_rmem="4096 87380 67108864"
+ip netns exec ns_receiver sysctl -w net.ipv4.tcp_wmem="4096 65536 67108864"
+```
+
+Смотрим как настроились интерфкейсы:
+
+```bash
+ip -all netns exec ip a
+```
+
+
+запускаем мониторинг ошибок:
+
+```bash
+watch -n 1 "ip netns exec ns_sender ethtool -S enP5p1s0f0 | grep -E 'err|drop|loss'"
+watch -n 1 "ip netns exec ns_sender ethtool -S enP5p1s0f1 | grep -E 'err|drop|loss'"
+```
+
+пускаем трафик в петлю:
+
+```bash
+ip netns exec ns_receiver iperf3 -s
+ip netns exec ns_sender iperf3 -c 10.0.0.2 -t 30 -P 4 -R
+```
+
+можно с явным указанием ядер (в этом примере меняем местами приёмник с передатчиком):
+
+```bash
+ip netns exec ns_receiver taskset -c 7-10 iperf3 -s
+ip netns exec ns_sender taskset -c 1-4 iperf3 -c 10.0.0.2 -t 15 -P 4 -R 
+```
+
+
+просмотр состояния линка:
+
+```bash
+ip netns exec ns_sender   ethtool enP5p1s0f0
+ip netns exec ns_receiver ethtool enP5p1s0f1
+```
+
+
+дополнительные параметры линка
+```bash
+ip netns exec ns_sender   ethtool -k enP5p1s0f0
+ip netns exec ns_receiver ethtool -k enP5p1s0f1
+```
+
+можно ограничится только необходимым, например:
+
+```bash
+ip netns exec ns_sender   ethtool  enP5p1s0f0 | egrep "Speed|Duplex|Auto-neg"
+```
+
+
+
+посмотреть параметы pci:
+```bash
+lspci -s 05:01:00.0 -vv | egrep "LnkCap|LnkSta"
+lspci -s 05:01:00.1 -vv | egrep "LnkCap|LnkSta"
+dmesg -T | egrep -i "aer|pcie|corrected|uncorrected|txgbe"
+```
+
+прочитать декодированную информацию из eeprom sfp:
+
+```bash
+ip netns exec ns_sender   ethtool -m enP5p1s0f0
+ip netns exec ns_receiver ethtool -m enP5p1s0f1
+```
