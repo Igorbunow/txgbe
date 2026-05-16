@@ -14,6 +14,10 @@ systems) while avoiding regressions when new kernels are added.
 
 ---
 
+**Read this in other languages: [Русский](README_ru.md).**
+
+---
+
 ## Why this fork exists
 
 The vendor driver package was published under GPL, but practical support across multiple kernel branches
