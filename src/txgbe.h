@@ -75,6 +75,12 @@
 DECLARE_STATIC_KEY_FALSE(txgbe_xdp_locking_key);
 #endif
 
+extern int txgbe_perf_diag;
+extern int txgbe_force_irq_affinity;
+extern int txgbe_port_affinity_spread;
+extern int txgbe_port_affinity_stride;
+extern int txgbe_tx_wthresh_safe;
+
 #ifndef XDP_PACKET_HEADROOM
 #define XDP_PACKET_HEADROOM 256
 #endif

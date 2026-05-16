@@ -813,6 +813,25 @@ static void txgbe_add_ring(struct txgbe_ring *ring,
  *
  * We allocate one q_vector.  If allocation fails we return -ENOMEM.
  **/
+#ifdef HAVE_IRQ_AFFINITY_HINT
+static int txgbe_nth_online_cpu(unsigned int nth)
+{
+	unsigned int i = 0;
+	int cpu;
+
+	if (!num_online_cpus())
+		return -1;
+
+	nth %= num_online_cpus();
+	for_each_online_cpu(cpu) {
+		if (i++ == nth)
+			return cpu;
+	}
+
+	return -1;
+}
+#endif
+
 static int txgbe_alloc_q_vector(struct txgbe_adapter *adapter,
 				unsigned int v_count, unsigned int v_idx,
 				unsigned int txr_count, unsigned int txr_idx,
@@ -837,11 +856,33 @@ static int txgbe_alloc_q_vector(struct txgbe_adapter *adapter,
 	/* customize cpu for Flow Director mapping */
 	if ((tcs <= 1) && !(adapter->flags & TXGBE_FLAG_VMDQ_ENABLED)) {
 		u16 rss_i = adapter->ring_feature[RING_F_RSS].indices;
+
 		if (rss_i > 1 && adapter->atr_sample_rate) {
-			if (cpu_online(v_idx)) {
-				cpu = v_idx;
-				node = cpu_to_node(cpu);
+			unsigned int cpu_index = v_idx;
+
+			if (txgbe_port_affinity_spread) {
+				unsigned int online = num_online_cpus();
+
+				if (txgbe_port_affinity_stride > 1) {
+					/*
+					 * Interleave ports between CPUs.  For stride=2:
+					 * port0 -> CPU0,2,4,6..., port1 -> CPU1,3,5,7...
+					 * This remains useful even when RSS equals online CPUs.
+					 */
+					cpu_index = v_idx * txgbe_port_affinity_stride;
+					cpu_index += adapter->bd_number % txgbe_port_affinity_stride;
+				} else if (online >= ((adapter->bd_number + 1) * rss_i)) {
+					/* Block split: port0 -> 0..rss-1, port1 -> rss..2*rss-1. */
+					cpu_index = adapter->bd_number * rss_i + v_idx;
+				} else {
+					/* Last-resort shift; avoids identical q_vector->CPU mapping. */
+					cpu_index = v_idx + adapter->bd_number;
+				}
 			}
+
+			cpu = txgbe_nth_online_cpu(cpu_index);
+			if (cpu >= 0)
+				node = cpu_to_node(cpu);
 		}
 	}
 
@@ -886,6 +927,17 @@ static int txgbe_alloc_q_vector(struct txgbe_adapter *adapter,
 	adapter->q_vector[v_idx] = q_vector;
 	q_vector->adapter = adapter;
 	q_vector->v_idx = v_idx;
+
+	if (txgbe_perf_diag >= 2) {
+		int hint_cpu = cpumask_empty(&q_vector->affinity_mask) ?
+			       -1 : cpumask_first(&q_vector->affinity_mask);
+
+		dev_info(pci_dev_to_dev(adapter->pdev),
+			 "%s: alloc q_vector=%u txr_count=%u txr_idx=%u rxr_count=%u rxr_idx=%u hint_cpu=%d numa_node=%d bd=%u\n",
+			 netdev_name(adapter->netdev), v_idx, txr_count, txr_idx,
+			 rxr_count, rxr_idx, hint_cpu, node,
+			 adapter->bd_number);
+	}
 
 	/* initialize work limits */
 	q_vector->tx.work_limit = adapter->tx_work_limit;

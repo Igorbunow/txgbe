@@ -250,6 +250,162 @@ sudo make -C "$KERNELDIR" M="$PWD/src" modules_install
 sudo depmod -a
 ```
 
+
+---
+
+## Loongson-3A6000 dual-port 10G bring-up
+
+This section documents the validated setup for **Loongson-3A6000 / LoongArch64** with
+LR-LINK LRES1002PF-2SFP+ running both SFP+ ports at line rate.
+
+Validated environment:
+- CPU: Loongson-3A6000 / LA664, 8 online CPUs
+- kernel: ALT Linux LoongArch64 6.18.x
+- compiler: GCC 14.x for loongarch64
+- PCIe: 8.0 GT/s x8, approximately 63 Gb/s available bandwidth
+- NIC: LR-LINK LRES1002PF-2SFP+ / WangXun txgbe, two SFP+ ports
+- observed result: `iperf3` dual-port bound test reaches about **9.90 Gbit/s per port**
+
+### Important lessons from bring-up
+
+The card can run at full dual-port throughput on Loongson, but the following issues can
+make the result look like a driver or PCIe bottleneck:
+
+1. **Route/test binding mistakes.** Each `iperf3` client must be bound with `-B` and must
+   use the matching peer address. Do not test both ports against the same destination IP.
+2. **NetworkManager interference.** Manual `ip addr` configuration may be removed after
+   a link flap or netdev recreation. Use unmanaged devices for deterministic tests, or
+   create persistent NetworkManager profiles.
+3. **IRQ/RSS CPU overlap.** With two 10G ports on an 8-core system, use 4 queues per port
+   and split the ports across CPU0-3 and CPU4-7.
+4. **Physical link problems.** Rapid growth of `rx_crc_errors` points to SFP/cable/remote
+   port issues rather than RSS or PCIe. Swap SFPs/cables/remote ports before changing the driver.
+5. **Avoid `InterruptThrottleRate=0` as the first tuning point.** On Loongson, adaptive
+   mode with safe Tx write-back threshold was more stable during testing.
+
+### Debug / bring-up module load
+
+For Loongson bring-up, use `insmod` first so that every parameter is explicit and easy to
+change between tests:
+
+```bash
+sudo systemctl stop irqbalance 2>/dev/null || true
+sudo nmcli dev set enp8s0f0 managed no 2>/dev/null || true
+sudo nmcli dev set enp8s0f1 managed no 2>/dev/null || true
+
+sudo rmmod txgbe 2>/dev/null || true
+sudo insmod src/txgbe.ko \
+  RSS=4,4 \
+  InterruptThrottleRate=1,1 \
+  AtrSampleRate=20,20 \
+  irq_nobalance=0 \
+  txgbe_perf_diag=2 \
+  txgbe_force_irq_affinity=1 \
+  txgbe_port_affinity_spread=1 \
+  txgbe_tx_wthresh_safe=1 \
+  sfp_i2c_fix=1 \
+  txgbe_sfp_status_poll=0 \
+  txgbe_link_diag=1
+```
+
+Expected IRQ split for `RSS=4,4` on an 8-core Loongson host:
+
+```text
+enp8s0f0-TxRx-0..3 -> CPU0..CPU3
+enp8s0f1-TxRx-0..3 -> CPU4..CPU7
+```
+
+Check it with:
+
+```bash
+cat /proc/interrupts | grep -E 'CPU|enp8s0f0|enp8s0f1'
+for irq in $(grep -E 'enp8s0f0|enp8s0f1' /proc/interrupts | awk -F: '{gsub(/ /,"",$1); print $1}'); do
+    echo "$irq $(cat /proc/irq/$irq/smp_affinity_list)"
+done
+```
+
+`txgbe_sfp_status_poll=0` is a diagnostic/stability workaround for systems where SFP
+internal PHY polling causes link flaps. It may reduce hotplug/status responsiveness. If
+link is stable with polling enabled, prefer the legacy default `txgbe_sfp_status_poll=1`.
+
+### Deterministic dual-port iperf3 test
+
+Server side example, with two server NICs named `eth2` and `eth6`:
+
+```bash
+sudo IF0=eth2 IF1=eth6 \
+  IP0=10.0.20.30/24 IP1=10.0.21.31/24 \
+  BIND0=10.0.20.30 BIND1=10.0.21.31 \
+  tools/txgbe_server_dual_iperf_bound.sh
+```
+
+Client side example, with Loongson txgbe ports named `enp8s0f0` and `enp8s0f1`:
+
+```bash
+sudo IF0=enp8s0f0 IF1=enp8s0f1 \
+  IP0=10.0.20.20/24 IP1=10.0.21.20/24 \
+  SRC0=10.0.20.20 SRC1=10.0.21.20 \
+  DST0=10.0.20.30 DST1=10.0.21.31 \
+  TIME=300 PARALLEL=4 \
+  tools/txgbe_client_dual_iperf_bound.sh
+```
+
+Before trusting throughput numbers, verify that routing is split correctly:
+
+```bash
+ip route get 10.0.20.30 from 10.0.20.20
+ip route get 10.0.21.31 from 10.0.21.20
+```
+
+Expected output must include different devices, for example:
+
+```text
+10.0.20.30 from 10.0.20.20 dev enp8s0f0 ...
+10.0.21.31 from 10.0.21.20 dev enp8s0f1 ...
+```
+
+### NetworkManager unmanaged test profile
+
+For temporary lab tests, copy the example config and reload NetworkManager:
+
+```bash
+sudo cp docs/examples/99-txgbe-unmanaged.conf /etc/NetworkManager/conf.d/99-txgbe-unmanaged.conf
+sudo systemctl reload NetworkManager
+nmcli dev status | grep -E 'enp8s0f0|enp8s0f1'
+```
+
+Adjust interface names or MAC addresses in the file before using it on another host.
+
+### Release installation with modprobe parameters
+
+After validating the parameters with `insmod`, install the module into the running kernel's
+module tree and use `/etc/modprobe.d/` for persistent parameters:
+
+```bash
+sudo install -D -m 0644 src/txgbe.ko /lib/modules/$(uname -r)/extra/txgbe/txgbe.ko
+sudo depmod -a
+```
+
+Create `/etc/modprobe.d/txgbe-loongson.conf`:
+
+```conf
+# LR-LINK LRES1002PF-2SFP+ on Loongson-3A6000.
+# Keep diagnostic verbosity disabled for normal operation.
+options txgbe RSS=4,4 InterruptThrottleRate=1,1 AtrSampleRate=20,20 irq_nobalance=0   txgbe_force_irq_affinity=1 txgbe_port_affinity_spread=1 txgbe_tx_wthresh_safe=1   sfp_i2c_fix=1 txgbe_sfp_status_poll=0 txgbe_perf_diag=0 txgbe_link_diag=0
+```
+
+Then load through the normal module path:
+
+```bash
+sudo modprobe -r txgbe 2>/dev/null || true
+sudo modprobe txgbe
+cat /sys/module/txgbe/parameters/RSS 2>/dev/null || true
+dmesg -T | grep -i txgbe | tail -n 100
+```
+
+If SFP status polling is stable on your hardware, change `txgbe_sfp_status_poll=0` to
+`txgbe_sfp_status_poll=1` for better legacy link-status behavior.
+
 ---
 
 ## Compatibility layer (kcompat) — important

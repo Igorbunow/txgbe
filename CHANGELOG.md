@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Added Loongson-3A6000 / LoongArch64 dual-port 10G bring-up documentation and
+  deterministic bound `iperf3` helper scripts.
+- Documented stable Loongson test parameters: `RSS=4,4`, adaptive interrupt
+  throttling, forced IRQ affinity, per-port CPU affinity spread, safe Tx
+  descriptor write-back threshold, and optional SFP status polling disable.
+- Documented NetworkManager unmanaged-device setup for lab tests to prevent
+  manual IP configuration from being removed after link flaps or netdev recreation.
+- Documented troubleshooting guidance for dual-port tests: use `iperf3 -B`,
+  verify split routing, check IRQ mapping, and treat fast-growing `rx_crc_errors`
+  as a physical SFP/cable/remote-port issue before changing driver logic.
+
 - hwmon compatibility fix for kernels where `hwmon_device_register()` is deprecated.
 - registration flow now prefers:
   `hwmon_device_register_with_info()` -> `hwmon_device_register_with_groups()` -> `hwmon_device_register()`.

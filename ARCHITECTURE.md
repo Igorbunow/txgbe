@@ -74,3 +74,68 @@ container images) corresponding to the supported versions. CI must fail on any b
 
 (Implementation details depend on where kernel header trees are sourced from.)
 
+## LoongArch / Loongson performance bring-up notes
+
+The Loongson-3A6000 validation exposed several performance-sensitive areas that
+are useful on other architectures too, but must remain opt-in unless a platform is
+known to need them.
+
+### IRQ, RSS and CPU affinity
+
+The driver allocates MSI-X q_vectors per adapter. On a two-port 10G NIC, legacy
+q_vector-to-CPU mapping can put both ports on the same CPU set. This may cap
+aggregate throughput even when each port can reach 10G independently.
+
+For an 8-core Loongson-3A6000 system, the validated debug configuration uses:
+
+```text
+RSS=4,4
+txgbe_force_irq_affinity=1
+txgbe_port_affinity_spread=1
+```
+
+Expected mapping:
+
+```text
+port0 q_vectors -> CPU0..CPU3
+port1 q_vectors -> CPU4..CPU7
+```
+
+This avoids both ports competing for exactly the same softirq/IRQ CPUs.
+
+### Tx write-back threshold
+
+The original code programmed a high Tx descriptor write-back threshold even for
+very low or disabled interrupt throttling modes. On LoongArch this can make Tx
+completion behavior more fragile under heavy load. The `txgbe_tx_wthresh_safe`
+parameter keeps the old behavior by default on non-LoongArch platforms, while
+allowing LoongArch bring-up to use a safer threshold.
+
+Policy:
+- Do not make Loongson-specific tuning global without cross-architecture testing.
+- Keep runtime parameters available for A/B testing.
+- Keep diagnostic logging disabled by default.
+
+### SFP status polling
+
+Some copper SFP/internal PHY polling paths may cause link flaps or misleading link
+state transitions on sensitive setups. The `txgbe_sfp_status_poll` parameter allows
+that polling to be disabled during diagnostics. It is not a universal fix: disabling
+polling may reduce hotplug/status responsiveness.
+
+Use `txgbe_link_diag=1` or `2` only while collecting evidence for link-state bugs.
+
+### Test methodology requirements
+
+Dual-port throughput tests must be deterministic:
+- bind each client with `iperf3 -B <source-ip>`;
+- use different destination IPs/subnets for each port;
+- verify `ip route get <dst> from <src>` before testing;
+- check `/proc/interrupts` and `/proc/irq/*/smp_affinity_list`;
+- watch `ethtool -S` counters, especially `rx_crc_errors`, `rx_no_buffer_count`,
+  `rx_missed_errors`, `tx_timeout_count`, and flow-control counters.
+
+Fast-growing `rx_crc_errors` should be treated as a physical link problem first:
+swap SFP modules, cables and remote switch/server ports before changing datapath
+logic.
+

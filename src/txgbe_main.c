@@ -210,6 +210,54 @@ MODULE_PARM_DESC(irq_nobalance,
         "Disable irqbalance/affinity changes for MSI-X vectors "
         "(0=allow balancing, 1=no balancing; default: 1 on ARM/ARM64, 0 on x86)");
 
+
+int txgbe_perf_diag __read_mostly = 0;
+module_param(txgbe_perf_diag, int, 0444);
+MODULE_PARM_DESC(txgbe_perf_diag,
+		"Log performance-related queue/MSI-X/RSS diagnostics "
+		"(0=off, 1=summary, 2=per-vector details)");
+
+int txgbe_force_irq_affinity __read_mostly = 0;
+module_param(txgbe_force_irq_affinity, int, 0444);
+MODULE_PARM_DESC(txgbe_force_irq_affinity,
+		"Force MSI-X IRQ affinity to the driver's q_vector CPU mask "
+		"in addition to setting the affinity hint (0=off, 1=on)");
+
+int txgbe_port_affinity_spread __read_mostly = 0;
+module_param(txgbe_port_affinity_spread, int, 0444);
+MODULE_PARM_DESC(txgbe_port_affinity_spread,
+		"Offset q_vector CPU affinity by adapter number to reduce "
+		"two-port CPU overlap (0=legacy, 1=spread by port)");
+
+int txgbe_port_affinity_stride __read_mostly = 0;
+module_param(txgbe_port_affinity_stride, int, 0444);
+MODULE_PARM_DESC(txgbe_port_affinity_stride,
+		"CPU interleave stride for txgbe_port_affinity_spread "
+		"(0=auto, 2=recommended for two-port tests)");
+
+#ifdef CONFIG_LOONGARCH
+#define TXGBE_DEFAULT_TX_WTHRESH_SAFE 1
+#else
+#define TXGBE_DEFAULT_TX_WTHRESH_SAFE 0
+#endif
+
+int txgbe_tx_wthresh_safe __read_mostly = TXGBE_DEFAULT_TX_WTHRESH_SAFE;
+module_param(txgbe_tx_wthresh_safe, int, 0444);
+MODULE_PARM_DESC(txgbe_tx_wthresh_safe,
+		"Use safe Tx descriptor write-back threshold for sensitive "
+		"platforms (default: 1 on LoongArch, 0 elsewhere)");
+
+int txgbe_sfp_status_poll __read_mostly = 1;
+module_param(txgbe_sfp_status_poll, int, 0644);
+MODULE_PARM_DESC(txgbe_sfp_status_poll,
+		"Poll SFP internal PHY status for copper SFP modules "
+		"(0=disabled for diagnostics, 1=legacy default)");
+
+int txgbe_link_diag __read_mostly = 0;
+module_param(txgbe_link_diag, int, 0644);
+MODULE_PARM_DESC(txgbe_link_diag,
+		"Verbose link/SFP diagnostic logging (0=off, 1=state changes, 2=each poll)");
+
 /*
  * pcie_disable_aspm:
  * Some platforms are sensitive to PCIe ASPM (L0s/L1) with high-throughput
@@ -3713,22 +3761,42 @@ static int txgbe_request_msix_irqs(struct txgbe_adapter *adapter)
 			goto free_queue_irqs;
 		}
 #ifdef HAVE_IRQ_AFFINITY_HINT
-		/* If Flow Director is enabled, set interrupt affinity */
+		if (txgbe_perf_diag >= 2) {
+			int cpu = cpumask_empty(&q_vector->affinity_mask) ?
+				  -1 : cpumask_first(&q_vector->affinity_mask);
+
+			dev_info(pci_dev_to_dev(adapter->pdev),
+				 "%s: MSIX q_vector=%d irq=%d name=%s tx_rings=%u rx_rings=%u hint_cpu=%d fdir_hash=%u atr_sample_rate=%u irq_nobalance=%d\n",
+				 netdev->name, vector, entry->vector, q_vector->name,
+				 q_vector->tx.count, q_vector->rx.count, cpu,
+				 !!(adapter->flags & TXGBE_FLAG_FDIR_HASH_CAPABLE),
+				 adapter->atr_sample_rate, irq_nobalance);
+		}
+
+		/* If Flow Director is enabled, set interrupt affinity. */
 		if (!irq_nobalance &&
 		    (adapter->flags & TXGBE_FLAG_FDIR_HASH_CAPABLE) &&
 		    !cpumask_empty(&q_vector->affinity_mask)) {
+			int affinity_err;
+
 			/* assign the mask for this irq */
-			/*
-			 * Some platforms (and early boot stages) may not have the target
-			 * CPU online yet, leaving affinity_mask empty. Passing an empty
-			 * cpumask to irq_set_affinity_hint() may cause -EINVAL and a noisy
-			 * "IRQxxx: set affinity failed(-22)" message during boot.
-			 *
-			 * Only set a hint when the mask is non-empty.
-			 */
-			if (!cpumask_empty(&q_vector->affinity_mask))
-				irq_set_affinity_hint(entry->vector,
-						      &q_vector->affinity_mask);
+			affinity_err = irq_set_affinity_hint(entry->vector,
+							      &q_vector->affinity_mask);
+			if (txgbe_perf_diag && affinity_err)
+				dev_info(pci_dev_to_dev(adapter->pdev),
+					 "%s: irq_set_affinity_hint irq=%d q_vector=%d failed: %d\n",
+					 netdev->name, entry->vector, vector,
+					 affinity_err);
+
+			if (txgbe_force_irq_affinity) {
+				affinity_err = irq_set_affinity(entry->vector,
+								 &q_vector->affinity_mask);
+				if (txgbe_perf_diag || affinity_err)
+					dev_info(pci_dev_to_dev(adapter->pdev),
+						 "%s: irq_set_affinity irq=%d q_vector=%d ret=%d\n",
+						 netdev->name, entry->vector, vector,
+						 affinity_err);
+			}
 		}
 #endif /* HAVE_IRQ_AFFINITY_HINT */
 	}
@@ -3993,7 +4061,31 @@ void txgbe_configure_tx_ring(struct txgbe_adapter *adapter,
 	 * currently 40.
 	 */
 
-	txdctl |= 0x20 << TXGBE_PX_TR_CFG_WTHRESH_SHIFT;
+	{
+		u32 wthresh = 0x20;
+
+		/*
+		 * The original code unconditionally programmed WTHRESH=0x20 even
+		 * though the comment above explicitly warns against large WTHRESH
+		 * when interrupt throttling is disabled or set above 100k int/sec.
+		 * This is especially risky on weaker CPU/IRQ paths because delayed
+		 * descriptor write-back may look like a Tx stall under load.
+		 */
+		if (txgbe_tx_wthresh_safe &&
+		    ((adapter->tx_itr_setting == 0) ||
+		     (adapter->tx_itr_setting == 1) ||
+		     ((adapter->tx_itr_setting > 1) &&
+		      (adapter->tx_itr_setting < TXGBE_100K_ITR))))
+			wthresh = 1;
+
+		if (txgbe_perf_diag >= 2)
+			dev_info(pci_dev_to_dev(adapter->pdev),
+				 "%s: txq=%u tx_itr_setting=%u tx_wthresh=%u txdctl=0x%x\n",
+				 netdev_name(adapter->netdev), reg_idx,
+				 adapter->tx_itr_setting, wthresh, txdctl);
+
+		txdctl |= wthresh << TXGBE_PX_TR_CFG_WTHRESH_SHIFT;
+	}
 
 	/* reinitialize flowdirector state */
 	if (adapter->flags & TXGBE_FLAG_FDIR_HASH_CAPABLE) {
@@ -7737,6 +7829,25 @@ int txgbe_open(struct net_device *netdev)
 	if (err)
 		goto err_set_queues;
 
+	if (txgbe_perf_diag) {
+		struct txgbe_ring_feature *rss = &adapter->ring_feature[RING_F_RSS];
+		struct txgbe_ring_feature *fdir = &adapter->ring_feature[RING_F_FDIR];
+
+		dev_info(pci_dev_to_dev(adapter->pdev),
+			 "%s: open queues tx=%d rx=%d q_vectors=%d rss_limit=%u rss_indices=%u rss_mask=0x%x fdir_limit=%u fdir_indices=%u flags=0x%x flags2=0x%x rx_itr=%u tx_itr=%u atr_sample_rate=%u irq_nobalance=%d force_irq_affinity=%d port_affinity_spread=%d port_affinity_stride=%d tx_wthresh_safe=%d\n",
+			 netdev->name, adapter->num_tx_queues,
+			 adapter->num_rx_queues, adapter->num_q_vectors,
+			 rss->limit, rss->indices, rss->mask,
+			 fdir->limit, fdir->indices,
+			 adapter->flags, adapter->flags2,
+			 adapter->rx_itr_setting, adapter->tx_itr_setting,
+			 adapter->atr_sample_rate, irq_nobalance,
+			 txgbe_force_irq_affinity,
+			 txgbe_port_affinity_spread,
+			 txgbe_port_affinity_stride,
+			 txgbe_tx_wthresh_safe);
+	}
+
 #ifdef HAVE_PTP_1588_CLOCK
 	txgbe_ptp_init(adapter);
 #endif
@@ -9002,11 +9113,12 @@ static void txgbe_service_timer(struct timer_list *t)
 	mod_timer(&adapter->service_timer, next_event_offset + jiffies);
 
 	txgbe_service_event_schedule(adapter);
-	if ((hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core0) ||
-		(hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core1) ||
-		(hw->phy.sfp_type == txgbe_sfp_type_10g_cu_core0) ||
-		(hw->phy.sfp_type == txgbe_sfp_type_10g_cu_core1)) {
-		next_event_offset = HZ/10;
+	if (txgbe_sfp_status_poll &&
+	    ((hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core0) ||
+	     (hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core1) ||
+	     (hw->phy.sfp_type == txgbe_sfp_type_10g_cu_core0) ||
+	     (hw->phy.sfp_type == txgbe_sfp_type_10g_cu_core1))) {
+		next_event_offset = HZ / 10;
 		queue_work(txgbe_wq, &adapter->sfp_sta_task);
 	}
 }
@@ -9026,33 +9138,33 @@ static void txgbe_sfp_phy_status_work(struct work_struct *work)
 		return;
 
 	if ((hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core0) ||
-		(hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core1)) {
+	    (hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core1)) {
 		i2c_status = TCALL(hw, phy.ops.read_i2c_sfp_phy,
 					 0x0a,
 					 &data);
 
 		if (i2c_status != 0)
-			goto RELEASE_SEM;
+			goto release_sem;
 
 		/* Avoid read module info and read f2c module internal phy
-		 * may cause i2c controller read reg data err
+		 * may cause i2c controller read reg data err.
 		 */
 		if ((data & 0x83ff) != 0 || data == 0)
-			goto RELEASE_SEM;
+			goto release_sem;
 
-		if ((data & TXGBE_I2C_PHY_LOCAL_RX_STATUS) && 
-			(data & TXGBE_I2C_PHY_REMOTE_RX_STATUS))
+		if ((data & TXGBE_I2C_PHY_LOCAL_RX_STATUS) &&
+		    (data & TXGBE_I2C_PHY_REMOTE_RX_STATUS))
 			status = true;
 		else
 			status = false;
-	}else if ((hw->phy.sfp_type == txgbe_sfp_type_10g_cu_core0) ||
-		(hw->phy.sfp_type == txgbe_sfp_type_10g_cu_core1)) {
+	} else if ((hw->phy.sfp_type == txgbe_sfp_type_10g_cu_core0) ||
+		   (hw->phy.sfp_type == txgbe_sfp_type_10g_cu_core1)) {
 		i2c_status = TCALL(hw, phy.ops.read_i2c_sfp_phy,
 					 0x8008,
 					 &data);
 
 		if (i2c_status != 0)
-			goto RELEASE_SEM;
+			goto release_sem;
 
 		if (data & TXGBE_I2C_10G_SFP_LINK_STATUS)
 			status = true;
@@ -9060,10 +9172,24 @@ static void txgbe_sfp_phy_status_work(struct work_struct *work)
 			status = false;
 	}
 
-RELEASE_SEM:
+release_sem:
 	TCALL(hw, mac.ops.release_swfw_sync, swfw_mask);
+
+	if (i2c_status != 0) {
+		if (txgbe_link_diag)
+			e_info(drv, "%s: sfp status poll failed type=%d err=%d old=%d\n",
+			       netdev_name(adapter->netdev), hw->phy.sfp_type,
+			       i2c_status, hw->f2c_mod_status);
+		return;
+	}
+
 	/* sync sfp status to firmware */
 	wr32(hw, TXGBE_TSC_LSEC_PKTNUM0, data | 0x80000000);
+
+	if (txgbe_link_diag >= 2 || hw->f2c_mod_status != status)
+		e_info(drv, "%s: sfp status poll type=%d data=0x%04x old=%d new=%d\n",
+		       netdev_name(adapter->netdev), hw->phy.sfp_type, data,
+		       hw->f2c_mod_status, status);
 
 	if (hw->f2c_mod_status != status) {
 		hw->f2c_mod_status = status;
