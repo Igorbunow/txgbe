@@ -1,8 +1,6 @@
-Ниже представлен перевод вашей инструкции на английский язык с сохранением структуры, команд и технической терминологии.
-
----
-
 # Two-Port Network Card (SFP+) Loopback Physical Test Guide
+
+[ English ](loopback_test.md) | [ Русский ](loopback_test_ru.md)
 
 ## Part 1. Concept and Theoretical Background
 
@@ -256,5 +254,3 @@ sysctl --system > /dev/null
 * **rx_missed_errors / rx_fifo_errors:** Buffer overflow (PCIe bottleneck or Ring Buffer too small).
 * **Symbol / CRC / FCS errors:** Physical layer issue (bad cable, dirty optics, SFP overheating).
 * **Retransmits in iperf:** Packet loss in transit.
-
-Would you like me to create a summary table of the most common error counters and their specific hardware causes?

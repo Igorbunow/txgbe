@@ -1,5 +1,7 @@
 # Instruction for Load Testing and Diagnostics of SFP Interfaces
 
+[ English ](sfp_test.md) | [ Русский ](sfp_test_ru.md)
+
 This manual describes the process of preparing a Linux operating system and conducting throughput tests for network interface cards (10GbE and higher).
 
 ## 1. Testing Principle
@@ -97,12 +99,20 @@ ethtool -K eth6 tso on gso on sg on
 
 ### 2.3. Firewall Configuration
 
-Incoming traffic must be allowed for the test.
+Incoming traffic must be allowed for the test. Detailed Firewall configuration instructions are in [FIREWALL.md](FIREWALL.md).
 
 ```bash
 # If using iptables
 iptables -A INPUT -i eth2 -j ACCEPT
 iptables -A INPUT -i eth6 -j ACCEPT
+# Or allow specific iperf3 ports (default is 5201)
+iptables -A INPUT -p tcp --dport 5201 -j ACCEPT
+iptables -A INPUT -p udp --dport 5201 -j ACCEPT
+
+# If using nftables
+nft add rule inet filter input iifname "eth2" accept
+nft add rule inet filter input tcp dport 5201 accept
+
 # Or disable the firewall entirely during testing (systemctl stop firewalld / ufw disable)
 
 ```

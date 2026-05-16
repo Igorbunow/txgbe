@@ -1,4 +1,6 @@
-# ARCHITECTURE.md
+# Project Architecture (ARCHITECTURE.md)
+
+[ English ](ARCHITECTURE.md) | [ Русский ](ARCHITECTURE_ru.md)
 
 ## Overview
 This repository provides the out-of-tree Linux kernel module `txgbe` for WangXun-based

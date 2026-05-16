@@ -1,5 +1,7 @@
 # Инструкция по тестированию двухпортовой сетевой карты (SFP+) методом физической петли
 
+[ English ](loopback_test.md) | [ Русский ](loopback_test_ru.md)
+
 ## Часть 1. Принцип действия и теоретическое обоснование
 
 ### Суть метода
@@ -436,7 +438,7 @@ ip link show enP5p1s0f0 | grep mtu
 Если во время теста вы видите:
 
 1. **rx_missed_errors / rx_fifo_errors:** Карта получила пакет, но не смогла передать его в RAM (PCIe забит или Ring Buffer мал).
-* *Лечение:* Увеличить Ring Buffer (`ethtool -G`), проверить PCIe (`lspci`), включить Pause Frames.
+* *Лечение:* Увеличивать Ring Buffer (`ethtool -G`), проверить PCIe (`lspci`), включить Pause Frames.
 
 
 2. **rx_no_dma_resources:** Драйверу не хватает памяти.

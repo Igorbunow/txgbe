@@ -1,3 +1,7 @@
+# Краткое руководство по тесту петлёй (Loopback)
+
+[ English ](loopback_quick_guide.md) | [ Русский ](loopback_quick_guide_ru.md)
+
 Тест петлёй:
 
 Настраиваем (сохраним в sfp_conf_loopback.sh)

@@ -1,5 +1,7 @@
 # Kernel Headers Preparation Utility
 
+[ English ](prepare_kernels.md) | [ Русский ](prepare_kernels_ru.md)
+
 This utility prepares **Linux kernel build trees** for **out-of-tree module compilation**
 using `modules_prepare`, across **multiple kernel versions** and **multiple architectures**.
 
@@ -180,12 +182,6 @@ The script:
 * prints `gcc -dumpmachine`
 * **fails early** if compiler and ARCH do not match
 
-This prevents errors like:
-
-```
-aarch64-linux-gnu-gcc: error: unrecognized argument '-mcmodel=kernel'
-```
-
 ---
 
 ## Importing Kernel `.config` Files (Optional)
@@ -299,4 +295,3 @@ make -C /opt/kernels/5.15.198/build-arm64 M=$PWD modules
 
 This script is intended as an infrastructure utility.
 Use, modify, and integrate freely within your projects.
-

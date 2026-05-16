@@ -1,5 +1,7 @@
 # Инструкция по нагрузочному тестированию и диагностике SFP-интерфейсов
 
+[ English ](sfp_test.md) | [ Русский ](sfp_test_ru.md)
+
 Данная инструкция описывает процесс подготовки операционной системы Linux и проведения тестов пропускной способности сетевых карт (10GbE и выше).
 
 ## 1. Принцип тестирования
@@ -97,12 +99,20 @@ ethtool -K eth6 tso on gso on sg on
 
 ### 2.3. Настройка Firewall
 
-Необходимо разрешить входящий трафик для теста.
+Необходимо разрешить входящий трафик для теста. Подробные инструкции по настройке Firewall находятся в [FIREWALL_ru.md](FIREWALL_ru.md).
 
 ```bash
 # Если используется iptables
 iptables -A INPUT -i eth2 -j ACCEPT
 iptables -A INPUT -i eth6 -j ACCEPT
+# Или разрешить только порт iperf3 (по умолчанию 5201)
+iptables -A INPUT -p tcp --dport 5201 -j ACCEPT
+iptables -A INPUT -p udp --dport 5201 -j ACCEPT
+
+# Если используется nftables
+nft add rule inet filter input iifname "eth2" accept
+nft add rule inet filter input tcp dport 5201 accept
+
 # Или полностью отключить firewall на время теста (systemctl stop firewalld / ufw disable)
 
 ```
@@ -345,7 +355,7 @@ sysctl -w net.ipv4.tcp_sack=1
 
 ### 2.3. Firewall
 
-Отключите firewall или разрешите трафик:
+Отключите firewall или разрешите трафик. См. также [FIREWALL_ru.md](FIREWALL_ru.md).
 
 ```bash
 systemctl stop firewalld  # или ufw disable
@@ -382,7 +392,7 @@ iperf3 -c 10.0.20.30 -t 30 -P 4
 
 ### 4.1. Балансировка прерываний (NUMA и CPU Affinity)
 
-Критически важно разнести процессы `iperf3` по разным ядрам CPU, иначе одно ядро захлебнется обработкой прерываний (softirq) от двух карт сразу.
+Критически важно разнести processes `iperf3` по разным ядрам CPU, иначе одно ядро захлебнется обработкой прерываний (softirq) от двух карт сразу.
 
 1. **Проверка NUMA-узла:**
 ```bash
@@ -709,4 +719,3 @@ numactl --cpunodebind=0 iperf3 -s
 numactl --cpunodebind=1 iperf3 -c 10.0.20.20 -t 30 -P 4
 
 ```
-

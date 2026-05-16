@@ -1,5 +1,7 @@
 # Changelog
 
+[ English ](CHANGELOG.md) | [ Русский ](CHANGELOG_ru.md)
+
 ## Unreleased
 
 - Added Loongson-3A6000 / LoongArch64 dual-port 10G bring-up documentation and

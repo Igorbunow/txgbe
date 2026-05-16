@@ -9,6 +9,25 @@
 This repository contains an out-of-tree Linux kernel module (**txgbe**) for the **LR-LINK LRES1002PF-2SFP+**
 (dual SFP+, 10GbE) NIC family.
 
+[ English ](README.md) | [ Русский ](README_ru.md)
+
+---
+
+## Documentation Index
+
+- **[Architecture](ARCHITECTURE.md)** — Project structure and compatibility layer.
+- **[Changelog](CHANGELOG.md)** — History of changes.
+- **[Tools Guide](docs/TOOLS.md)** — Description of scripts in `tools/`.
+- **[Firewall Configuration](docs/FIREWALL.md)** — Configuring iptables/nftables for testing.
+- **[Kernel Headers Prep](docs/prepare_kernels.md)** — Preparing headers for multi-kernel builds.
+- **[SFP Testing Guide](docs/sfp_test.md)** — Comprehensive SFP/10G load testing.
+- **[SFP Performance (Multi-Port)](docs/sfp_performance_test.md)** — Testing aggregated bandwidth.
+- **[Loopback Quick Guide](docs/loopback_quick_guide.md)** — Fast hardware verification via loopback.
+- **[Verbose Build](docs/verbose_build.md)** — How to collect detailed build logs.
+
+---
+
+
 The main goal of this fork is **stable multi-LTS kernel compatibility** (especially for embedded / long-lived
 systems) while avoiding regressions when new kernels are added.
 
@@ -556,14 +575,13 @@ make -C "$KERNELDIR" M="$PWD/src" modules -j"$(nproc)"
 
 ---
 
-### 7) When reporting an issue
+### 8) Symptom: iperf3 "Connection refused" or "No route to host" during testing
 
-Please include:
+**Cause**
+The system firewall (iptables/nftables/firewalld) is blocking the testing traffic.
 
-* target kernel version and distro (or exact kernel source tree)
-* your `KERNELDIR`, `ARCH`, `CROSS_COMPILE`
-* full build log (first error matters most)
-* `dmesg` output if the module loads but the device does not appear
+**Fix**
+Configure the firewall to allow traffic on the testing interfaces. See [FIREWALL.md](docs/FIREWALL.md) for detailed instructions.
 
 ## Original source / provenance
 

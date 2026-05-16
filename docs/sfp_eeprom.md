@@ -1,6 +1,8 @@
-Here is the English version of the guide for reading SFP EEPROM data, decoded diagnostics (signal levels, temperature, etc.), and raw hex dumps using `ethtool`.
+# Reading SFP EEPROM Data (Decoded and Raw) and Signal Levels
 
-### How to Read SFP EEPROM Data (Decoded and Raw) and Signal Levels
+[ English ](sfp_eeprom.md) | [ Русский ](sfp_eeprom_ru.md)
+
+Here is the English version of the guide for reading SFP EEPROM data, decoded diagnostics (signal levels, temperature, etc.), and raw hex dumps using `ethtool`.
 
 The standard Linux utility `ethtool` with the `-m` (--dump-module-eeprom) option is used to access SFP/SFP+ module data. It can provide both a raw hex dump and a human-readable decoded output (including DOM diagnostics like TX/RX power, temperature, voltage, and bias current).
 
