@@ -13,6 +13,8 @@
   verify split routing, check IRQ mapping, and treat fast-growing `rx_crc_errors`
   as a physical SFP/cable/remote-port issue before changing driver logic.
 
+- Build cleanup: remove GCC `-Wint-in-bool-context` warnings from status-returning `TCALL()` uses.
+
 - hwmon compatibility fix for kernels where `hwmon_device_register()` is deprecated.
 - registration flow now prefers:
   `hwmon_device_register_with_info()` -> `hwmon_device_register_with_groups()` -> `hwmon_device_register()`.

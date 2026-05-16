@@ -277,7 +277,7 @@ int txgbe_sysfs_init(struct txgbe_adapter *adapter)
 #ifdef TXGBE_HWMON
 
 	/* Don't create thermal hwmon interface if no sensors present */
-	if (TCALL(&adapter->hw, mac.ops.init_thermal_sensor_thresh))
+	if (TCALL(&adapter->hw, mac.ops.init_thermal_sensor_thresh) != 0)
 		goto no_thermal;
 
 	/*

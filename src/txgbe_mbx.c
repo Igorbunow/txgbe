@@ -138,7 +138,8 @@ int txgbe_poll_for_msg(struct txgbe_hw *hw, u16 mbx_id)
 	if (!countdown || !mbx->ops.check_for_msg)
 		goto out;
 
-	while (countdown && TCALL(hw, mbx.ops.check_for_msg, mbx_id)) {
+	while (countdown &&
+	       TCALL(hw, mbx.ops.check_for_msg, mbx_id) != 0) {
 		countdown--;
 		if (!countdown)
 			break;
@@ -168,7 +169,8 @@ int txgbe_poll_for_ack(struct txgbe_hw *hw, u16 mbx_id)
 	if (!countdown || !mbx->ops.check_for_ack)
 		goto out;
 
-	while (countdown && TCALL(hw, mbx.ops.check_for_ack, mbx_id)) {
+	while (countdown &&
+	       TCALL(hw, mbx.ops.check_for_ack, mbx_id) != 0) {
 		countdown--;
 		if (!countdown)
 			break;

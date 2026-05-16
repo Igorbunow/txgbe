@@ -206,7 +206,7 @@ txgbe_simple_read_from_flash(struct txgbe_adapter *adapter,
 	to += rpos - pos;
 	while (rpos <= rtail) {
 		u32 value = txgbe_rd32(adapter->io_addr + rpos);
-		if (TCALL(hw, flash.ops.write_buffer, rpos>>2, 1, &value)) {
+		if (TCALL(hw, flash.ops.write_buffer, rpos >> 2, 1, &value) != 0) {
 			ret = size;
 			break;
 		}

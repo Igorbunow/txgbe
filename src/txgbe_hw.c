@@ -2421,7 +2421,7 @@ s32 txgbe_get_wwn_prefix(struct txgbe_hw *hw, u16 *wwnn_prefix,
 
 	/* check if alternative SAN MAC is supported */
 	offset = hw->eeprom.sw_region_offset + TXGBE_ALT_SAN_MAC_ADDR_BLK_PTR;
-	if (TCALL(hw, eeprom.ops.read, offset, &alt_san_mac_blk_offset))
+	if (TCALL(hw, eeprom.ops.read, offset, &alt_san_mac_blk_offset) != 0)
 		goto wwn_prefix_err;
 
 	if ((alt_san_mac_blk_offset == 0) ||
@@ -2430,20 +2430,20 @@ s32 txgbe_get_wwn_prefix(struct txgbe_hw *hw, u16 *wwnn_prefix,
 
 	/* check capability in alternative san mac address block */
 	offset = alt_san_mac_blk_offset + TXGBE_ALT_SAN_MAC_ADDR_CAPS_OFFSET;
-	if (TCALL(hw, eeprom.ops.read, offset, &caps))
+	if (TCALL(hw, eeprom.ops.read, offset, &caps) != 0)
 		goto wwn_prefix_err;
 	if (!(caps & TXGBE_ALT_SAN_MAC_ADDR_CAPS_ALTWWN))
 		goto wwn_prefix_out;
 
 	/* get the corresponding prefix for WWNN/WWPN */
 	offset = alt_san_mac_blk_offset + TXGBE_ALT_SAN_MAC_ADDR_WWNN_OFFSET;
-	if (TCALL(hw, eeprom.ops.read, offset, wwnn_prefix)) {
+	if (TCALL(hw, eeprom.ops.read, offset, wwnn_prefix) != 0) {
 		ERROR_REPORT2(TXGBE_ERROR_INVALID_STATE,
 			      "eeprom read at offset %d failed", offset);
 	}
 
 	offset = alt_san_mac_blk_offset + TXGBE_ALT_SAN_MAC_ADDR_WWPN_OFFSET;
-	if (TCALL(hw, eeprom.ops.read, offset, wwpn_prefix))
+	if (TCALL(hw, eeprom.ops.read, offset, wwpn_prefix) != 0)
 		goto wwn_prefix_err;
 
 wwn_prefix_out:

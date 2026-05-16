@@ -2574,7 +2574,7 @@ static bool txgbe_eeprom_test(struct txgbe_adapter *adapter, u64 *data)
 {
 	struct txgbe_hw *hw = &adapter->hw;
 
-	if (TCALL(hw, eeprom.ops.validate_checksum, NULL)) {
+	if (TCALL(hw, eeprom.ops.validate_checksum, NULL) != 0) {
 		*data = 1;
 		return true;
 	} else {
