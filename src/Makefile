@@ -65,6 +65,14 @@ txgbe-${CONFIG_SYSFS} += txgbe_sysfs.o
 
 txgbe-y += kcompat.o
 
+# Recent LoongArch binutils warn on right-shifting negative immediate
+# expressions emitted by GCC for large constants.  Keep this suppression
+# limited to LoongArch builds so other architectures still report their
+# assembler diagnostics normally.
+ifneq (,$(filter loongarch loongarch64,$(ARCH) $(SRCARCH)))
+ccflags-y += $(call cc-option,-Wa,--no-warn,)
+endif
+
 KCOMPAT_GENERATED_FILE := kcompat_generated_defs.h
 KCOMPAT_GEN_SCRIPT := $(src)/gen_kcompat.sh
 KCOMPAT_STAMP_FILE := .kcompat_kernelsrc
